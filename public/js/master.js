@@ -154,8 +154,42 @@ function renderCourseBar() {
   $('#courseName').textContent = c.name;
   $('#courseCode').textContent = c.code;
   $('#closedBadge').classList.toggle('hidden', c.open);
+  $('#liveBadge').classList.toggle('hidden', !c.open);
+  $('#liveBadge').textContent = c.sessionStartedAt ? `● 수업 중 · ${clock(c.sessionStartedAt)} 시작` : '● 입장·제출 열림';
+  $('#startBtn').classList.toggle('hidden', c.open);
+  $('#endBtn').classList.toggle('hidden', !c.open);
   renderStats();
 }
+
+function applyCourse(updated) {
+  const i = S.courses.findIndex((x) => x.id === updated.id);
+  if (i >= 0) S.courses[i] = updated; else S.courses.push(updated);
+  renderCourseSelect();
+  renderCourseBar();
+}
+
+// 수업 시작: 새 입장 코드 + 입장·제출 열기 + 입장 안내(QR) 바로 띄우기
+$('#startBtn').addEventListener('click', async () => {
+  const c = course();
+  if (!(await confirmDialog(`'${c.name}' 수업을 시작할까요?\n\n• 새 입장 코드와 QR 이 만들어집니다 (지난 코드는 사용 불가)\n• 학생 입장과 과제 제출이 열립니다\n• 이미 입장한 학생과 제출물은 그대로 유지됩니다`, { ok: '▶ 수업 시작' }))) return;
+  try {
+    const r = await api(`/api/master/courses/${c.id}/start`, { method: 'POST', headers: H() });
+    applyCourse(r.course);
+    openJoin();
+    toast(`수업을 시작했습니다. 새 입장 코드: ${r.course.code}`, 'ok', 4000);
+  } catch (e) { toast(e.message, 'error'); }
+});
+
+// 수업 종료: 입장·제출 마감
+$('#endBtn').addEventListener('click', async () => {
+  const c = course();
+  if (!(await confirmDialog(`'${c.name}' 수업을 종료할까요?\n\n• 새 입장과 과제 제출이 막힙니다\n• 제출된 파일은 그대로 남아 있어 계속 보고 받을 수 있습니다`, { ok: '⏹ 수업 종료', danger: true }))) return;
+  try {
+    const r = await api(`/api/master/courses/${c.id}/end`, { method: 'POST', headers: H() });
+    applyCourse(r.course);
+    toast('수업을 종료했습니다. 필요하면 🗜️ 전체 ZIP 으로 제출물을 받아 두세요.', 'ok', 4000);
+  } catch (e) { toast(e.message, 'error'); }
+});
 function renderStats() {
   const c = course();
   if (!c) return;

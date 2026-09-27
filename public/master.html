@@ -52,7 +52,11 @@
       <div class="course-head">
         <h2 class="editable" id="courseNameBtn" title="과목명 변경"><span id="courseName"></span><small>✏️</small></h2>
         <button class="code-chip" id="codeChip" title="입장 안내 크게 보기">입장 코드 <b id="courseCode"></b></button>
-        <span class="badge danger hidden" id="closedBadge">제출 마감</span>
+        <span class="badge ok hidden" id="liveBadge"></span>
+        <span class="badge danger hidden" id="closedBadge">수업 종료 · 제출 마감</span>
+        <div class="spacer"></div>
+        <button class="btn primary hidden" id="startBtn">▶ 수업 시작</button>
+        <button class="btn danger hidden" id="endBtn">⏹ 수업 종료</button>
       </div>
       <div class="stats" id="stats"></div>
       <div class="tools">
