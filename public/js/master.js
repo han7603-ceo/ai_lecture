@@ -3,7 +3,7 @@ import {
 } from './common.js';
 import { renderPreview, thumbFor } from './preview.js';
 
-const CONVERTIBLE = new Set(['doc', 'docx', 'ppt', 'pptx', 'pps', 'ppsx', 'xls', 'xlsx', 'hwp', 'hwpx']);
+const CONVERTIBLE = new Set(['doc', 'docx', 'ppt', 'pptx', 'pps', 'ppsx', 'xls', 'xlsx', 'hwp']);
 const store = {
   get(k) { try { return localStorage.getItem(k); } catch { return null; } },
   set(k, v) { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch { /* 무시 */ } },
@@ -15,6 +15,10 @@ const students = new Map(); // id -> student
 let courseId = store.get('lb_course');
 let filter = 'all';
 let hideEmpty = store.get('lb_hide_empty') === '1';
+let viewMode = store.get('lb_view') === 'thumb' ? 'thumb' : 'list'; // 좌석 박스: 파일 목록 / 썸네일
+let sortMode = store.get('lb_sort') || 'seat'; // seat: 자리순, recent: 최근 제출순, new: 확인 필요 우선
+let boxH = 160; // 현재 좌석 박스 높이(px) — 박스 안에 보여줄 파일 줄 수 계산에 사용
+let detailSince = 0; // 크게 보기를 연 시점의 '마지막 확인 시각' (그 이후 파일에 NEW 표시)
 let query = '';
 let socket = null;
 let detailId = null;
@@ -23,6 +27,10 @@ let detailFileId = null;
 const H = () => ({ 'x-master-token': token });
 const fileUrl = (f, dl) => `/files/${f.id}?t=${encodeURIComponent(token)}${dl ? '&download=1' : ''}`;
 const course = () => S?.courses.find((c) => c.id === courseId);
+const byRecent = (a, b) => b.uploadedAt - a.uploadedAt;
+// 교사가 마지막으로 확인한 뒤에 올라온 파일 = NEW
+const newFiles = (s) => s.files.filter((f) => f.uploadedAt > (s.reviewedAt || 0));
+const latestAt = (s) => s.files.reduce((m, f) => Math.max(m, f.uploadedAt), 0);
 const courseStudents = () => [...students.values()].filter((s) => s.courseId === courseId).sort((a, b) => a.seat - b.seat);
 
 // ------------------------------------------------------------ 로그인
@@ -65,7 +73,7 @@ function showDash() {
   $('#pwNotice').classList.toggle('hidden', !S.usingDefaultPassword);
   renderAll();
   connectSocket();
-  window.addEventListener('resize', layoutGrid);
+  window.addEventListener('resize', onResize);
   setInterval(() => renderGrid(), 30000); // "n분 전" 표시 갱신
 }
 
@@ -83,9 +91,13 @@ function connectSocket() {
     if (!prev) toast(`${s.seat}번 ${s.name} 학생이 입장했습니다.`);
     else if (s.files.length > prev.files.length) toast(`📥 ${s.seat}번 ${s.name} — 새 파일 ${s.files.length - prev.files.length}개 제출`, 'ok');
     const flash = !prev || s.files.length !== prev.files.length;
-    updateSeat(s, flash);
+    if (detailId === s.id) {
+      // 크게 보기로 보고 있는 학생의 새 파일은 바로 '확인함' 처리 (목록에는 NEW 로 표시)
+      if (prev && s.files.length > prev.files.length) markReviewed(s);
+      renderDetail();
+    }
+    if (sortMode === 'seat') updateSeat(s, flash); else renderGrid();
     renderStats();
-    if (detailId === s.id) renderDetail();
   });
   socket.on('student:remove', ({ id, courseId: cid }) => {
     students.delete(id);
@@ -151,6 +163,7 @@ function renderStats() {
   const on = list.filter((s) => s.online).length;
   const done = list.filter((s) => s.files.length).length;
   const files = list.reduce((n, s) => n + s.files.length, 0);
+  const unchecked = list.filter((s) => newFiles(s).length).length;
   const stat = (label, val, cls = '') => h('div', { class: `stat ${cls}` }, label, h('b', {}, val));
   $('#stats').replaceChildren(
     stat('정원', c.maxStudents),
@@ -159,6 +172,7 @@ function renderStats() {
     stat('제출 완료', done, 'ok'),
     stat('미제출', list.length - done, 'warn'),
     stat('전체 파일', files),
+    stat('확인 필요', unchecked, unchecked ? 'new' : ''),
   );
 }
 
@@ -177,6 +191,22 @@ $('#hideEmpty').addEventListener('change', (e) => {
   store.set('lb_hide_empty', hideEmpty ? '1' : null);
   renderGrid();
 });
+function bindSeg(sel, key, get, set) {
+  const seg = $(sel);
+  $$('button', seg).forEach((b) => b.classList.toggle('active', b.dataset.v === get()));
+  seg.addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    set(b.dataset.v);
+    store.set(key, b.dataset.v);
+    $$('button', seg).forEach((x) => x.classList.toggle('active', x === b));
+    renderGrid();
+  });
+}
+bindSeg('#viewSeg', 'lb_view', () => viewMode, (v) => { viewMode = v; });
+$('#sortSelect').value = sortMode;
+$('#sortSelect').addEventListener('change', (e) => { sortMode = e.target.value; store.set('lb_sort', sortMode); renderGrid(); });
+
 function matches(s) {
   if (filter === 'online' && !s.online) return false;
   if (filter === 'done' && !s.files.length) return false;
@@ -198,18 +228,26 @@ function renderGrid() {
   const grid = $('#seatGrid');
   grid.innerHTML = '';
   if (!c) return;
-  const bySeat = new Map(courseStudents().map((s) => [s.seat, s]));
   const filtering = filter !== 'all' || !!query;
-  let shown = 0;
-  for (let seat = 1; seat <= c.maxStudents; seat++) {
-    const s = bySeat.get(seat);
-    if (!s && (filtering || hideEmpty)) continue;
-    if (s && filtering && !matches(s)) continue;
-    grid.append(s ? seatBox(s) : emptySeat(seat));
-    shown++;
+  const list = courseStudents().filter((s) => !filtering || matches(s));
+  let entries;
+  if (sortMode === 'seat') {
+    // 자리 배치 그대로 (빈 자리 포함)
+    const bySeat = new Map(list.map((s) => [s.seat, s]));
+    entries = [];
+    for (let seat = 1; seat <= c.maxStudents; seat++) {
+      const s = bySeat.get(seat);
+      if (s) entries.push(s);
+      else if (!filtering && !hideEmpty) entries.push(seat);
+    }
+  } else {
+    // 최근 제출순 / 확인 필요 우선 (빈 자리 제외)
+    entries = [...list].sort((a, b) => (sortMode === 'new' ? newFiles(b).length - newFiles(a).length : 0)
+      || latestAt(b) - latestAt(a) || a.seat - b.seat);
   }
-  $('#noMatch').classList.toggle('hidden', shown > 0 || !filtering);
-  layoutGrid();
+  layoutGrid(entries.length);
+  for (const e of entries) grid.append(typeof e === 'number' ? emptySeat(e) : seatBox(e));
+  $('#noMatch').classList.toggle('hidden', entries.length > 0 || !filtering);
 }
 
 function emptySeat(seat) {
@@ -218,22 +256,47 @@ function emptySeat(seat) {
     h('div', { class: 'seat-body' }, '빈 자리'));
 }
 
+function fileIcon(f, size) {
+  const k = kindOf(f.ext);
+  if (k === 'image' && f.ext !== 'heic') return h('img', { class: 'sf-thumb', src: fileUrl(f), alt: '', loading: 'lazy', width: size, height: size });
+  return h('span', { class: 'sf-ico' }, iconOf(f.ext));
+}
+
 function seatBox(s) {
-  const files = [...s.files].sort((a, b) => b.uploadedAt - a.uploadedAt);
+  const files = [...s.files].reverse().sort(byRecent);
   const latest = files[0];
-  // 썸네일은 가장 최근 이미지/영상 우선
-  const visual = files.find((f) => ['image', 'video'].includes(kindOf(f.ext)) && f.ext !== 'heic') || latest;
-  const cls = ['seat', s.online ? 'online' : 'offline', files.length ? 'done' : ''].join(' ');
+  const fresh = new Set(newFiles(s).map((f) => f.id));
+  const cls = ['seat', s.online ? 'online' : 'offline', files.length ? 'done' : '', fresh.size ? 'has-new' : '', `view-${viewMode}`].join(' ');
+
+  let body;
+  if (!files.length) {
+    body = h('div', { class: 'seat-body' }, h('div', { class: 'seat-waiting' }, s.online ? '작업 중…' : '미접속'));
+  } else if (viewMode === 'thumb') {
+    // 썸네일 보기: 가장 최근 이미지/영상
+    const visual = files.find((f) => ['image', 'video'].includes(kindOf(f.ext)) && f.ext !== 'heic') || latest;
+    body = h('div', { class: 'seat-body' }, thumbFor(visual, fileUrl(visual)), h('span', { class: 'seat-count' }, `${files.length}개`));
+  } else {
+    // 목록 보기: 최신 파일이 위로, 박스 높이에 맞춰 줄 수 조절
+    const ROW = 24;
+    const capacity = Math.max(1, Math.floor((boxH - 64) / ROW));
+    const shown = files.length > capacity ? files.slice(0, capacity - 1) : files;
+    body = h('div', { class: 'seat-files' },
+      shown.map((f) => h('div', { class: `sf-row ${fresh.has(f.id) ? 'is-new' : ''}`, title: `${f.name} · ${timeAgo(f.uploadedAt)}` },
+        fileIcon(f, 18),
+        h('span', { class: 'sf-name' }, highlight(f.name)),
+        fresh.has(f.id) ? h('span', { class: 'new-tag' }, 'NEW') : null)),
+      files.length > shown.length ? h('div', { class: 'sf-more' }, `외 ${files.length - shown.length}개`) : null);
+  }
+
   return h('div', { class: cls, 'data-seat': s.seat, 'data-id': s.id, onclick: () => openDetail(s.id), title: `${s.name} — 클릭하여 크게 보기` },
     h('div', { class: 'seat-top' },
       h('span', { class: 'seat-no' }, s.seat),
       h('span', { class: `dot ${s.online ? 'on' : ''}` }),
-      h('span', { class: 'seat-name' }, highlight(s.name))),
-    h('div', { class: 'seat-body' },
-      visual ? thumbFor(visual, fileUrl(visual)) : h('div', { class: 'seat-waiting' }, s.online ? '작업 중…' : '미접속'),
-      files.length ? h('span', { class: 'seat-count' }, `${files.length}개`) : null),
+      h('span', { class: 'seat-name' }, highlight(s.name)),
+      fresh.size ? h('span', { class: 'new-badge' }, `NEW ${fresh.size}`) : null),
+    body,
     h('div', { class: 'seat-foot' },
-      files.length ? h('span', { class: 'st-done' }, '✔ 제출') : h('span', { class: 'st-none' }, '미제출'),
+      files.length ? h('span', { class: 'st-done' }, `✔ 제출 ${files.length}개`) : h('span', { class: 'st-none' }, '미제출'),
       h('span', {}, latest ? timeAgo(latest.uploadedAt) : s.online ? '접속중' : `접속 ${timeAgo(s.lastSeen)}`)));
 }
 
@@ -249,9 +312,8 @@ function updateSeat(s, flash) {
 // 정원/화면 크기에 맞춰 열 수와 박스 높이를 자동 계산
 // 한 화면에 모두 들어오는 배치 중 가장 큰 박스를 고르고, 너무 작아지면 최소 크기를 유지한 채 스크롤
 const MIN_BOX_H = 140;
-function layoutGrid() {
+function layoutGrid(n = $('#seatGrid').children.length) {
   const grid = $('#seatGrid');
-  const n = grid.children.length;
   if (!n) return;
   const gap = 10;
   const W = grid.clientWidth;
@@ -266,22 +328,36 @@ function layoutGrid() {
       const w = (W - gap * (cols - 1)) / cols;
       if (w < 140) break;
       const rows = Math.ceil(n / cols);
-      const boxH = Math.min(w * 0.9, (Havail - gap * (rows - 1)) / rows, 300);
-      if (boxH >= MIN_BOX_H && (!best || boxH > best.boxH)) best = { cols, boxH };
+      const bh = Math.min(w * 0.9, (Havail - gap * (rows - 1)) / rows, 300);
+      if (bh >= MIN_BOX_H && (!best || bh > best.boxH)) best = { cols, boxH: bh };
       fallback = { cols, boxH: Math.min(w * 0.9, 220) }; // 가장 많은 열 수
     }
     best ||= fallback || { cols: 1, boxH: 180 };
   }
+  boxH = Math.floor(Math.max(best.boxH, MIN_BOX_H));
   grid.style.setProperty('--cols', best.cols);
-  grid.style.setProperty('--box-h', `${Math.floor(Math.max(best.boxH, MIN_BOX_H))}px`);
+  grid.style.setProperty('--box-h', `${boxH}px`);
+}
+// 창 크기가 바뀌면 박스 크기와 함께 목록 줄 수도 다시 계산
+let resizeTimer;
+function onResize() {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(renderGrid, 150);
 }
 
 // ------------------------------------------------------------ 학생 크게 보기
 function openDetail(id) {
+  const s = students.get(id);
   detailId = id;
   detailFileId = null;
+  detailSince = s?.reviewedAt || 0;
   $('#detailModal').classList.remove('hidden');
   renderDetail();
+  if (s && newFiles(s).length) markReviewed(s);
+}
+// 교사가 확인함 → 좌석 박스의 NEW 표시 해제 (다른 교사 화면에도 반영)
+function markReviewed(s) {
+  api(`/api/master/students/${s.id}/reviewed`, { method: 'POST', headers: H() }).catch(() => {});
 }
 function closeDetail() {
   detailId = null;
@@ -320,7 +396,7 @@ function renderDetail() {
   $('#dZip').href = `/api/master/students/${s.id}/zip?t=${encodeURIComponent(token)}`;
   $('#dZip').classList.toggle('hidden', !s.files.length);
 
-  const files = [...s.files].sort((a, b) => b.uploadedAt - a.uploadedAt);
+  const files = [...s.files].reverse().sort(byRecent);
   const list = $('#dFiles');
   list.innerHTML = '';
   if (!files.length) list.append(h('p', { class: 'muted center' }, '아직 제출한 파일이 없습니다.'));
@@ -339,7 +415,7 @@ function renderDetail() {
     },
     h('div', { class: 'dthumb' }, thumb),
     h('div', { class: 'dinfo' },
-      h('div', { class: 'dname', title: f.name }, f.name),
+      h('div', { class: 'dname', title: f.name }, f.uploadedAt > detailSince ? h('span', { class: 'new-tag' }, 'NEW') : null, f.name),
       h('div', { class: 'dsub' }, `${formatBytes(f.size)} · ${clock(f.uploadedAt)}`)),
     h('a', { class: 'icon-btn', href: fileUrl(f, true), title: '다운로드', onclick: (e) => e.stopPropagation() }, '⬇️'),
     h('button', { class: 'icon-btn', title: '파일 삭제', onclick: (e) => { e.stopPropagation(); deleteFile(s, f); } }, '🗑️')));

@@ -49,7 +49,7 @@ const ALLOWED_EXT = new Set([
   'zip',
 ]);
 // LibreOffice 로 PDF 변환을 시도할 확장자
-const CONVERTIBLE_EXT = new Set(['doc', 'docx', 'ppt', 'pptx', 'pps', 'ppsx', 'xls', 'xlsx', 'hwp', 'hwpx']);
+const CONVERTIBLE_EXT = new Set(['doc', 'docx', 'ppt', 'pptx', 'pps', 'ppsx', 'xls', 'xlsx', 'hwp']);
 
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
@@ -167,7 +167,7 @@ function publicFile(f) {
 function publicStudent(s) {
   return {
     id: s.id, courseId: s.courseId, name: s.name, seat: s.seat,
-    joinedAt: s.joinedAt, lastSeen: s.lastSeen,
+    joinedAt: s.joinedAt, lastSeen: s.lastSeen, reviewedAt: s.reviewedAt || 0,
     online: (online.get(s.id) || 0) > 0,
     files: s.files.map(publicFile),
   };
@@ -405,6 +405,12 @@ app.post('/api/student/upload', requireStudent, (req, res) => {
     saveState();
     pushStudent(s);
     res.json({ student: publicStudent(s) });
+    // 교사가 열어볼 때 바로 보이도록 문서는 미리 PDF 로 변환 (백그라운드, 순차 처리)
+    if (canConvert) {
+      for (const f of req.files || []) {
+        if (CONVERTIBLE_EXT.has(extOf(f.originalname))) convertToPdf(f.path).catch(() => {});
+      }
+    }
   });
 });
 
@@ -463,6 +469,8 @@ function convertToPdf(abs) {
       });
       const produced = path.join(tmpDir, path.basename(abs).replace(/\.[^.]+$/, '') + '.pdf');
       if (!fs.existsSync(produced)) throw new Error('변환 결과가 없습니다.');
+      // 변환 중에 원본이 삭제됐으면 결과도 버림
+      if (!fs.existsSync(abs)) throw new Error('원본이 삭제되었습니다.');
       await fsp.copyFile(produced, out);
       return out;
     } finally {
@@ -663,6 +671,16 @@ app.delete('/api/master/students/:id', requireMaster, async (req, res) => {
   if (!s) return res.status(404).json({ error: '학생을 찾을 수 없습니다.' });
   await removeStudent(s);
   saveState();
+  res.json({ ok: true });
+});
+
+// 교사가 학생의 제출물을 확인함 → 이후 올라오는 파일만 NEW 로 표시
+app.post('/api/master/students/:id/reviewed', requireMaster, (req, res) => {
+  const s = state.students[req.params.id];
+  if (!s) return res.status(404).json({ error: '학생을 찾을 수 없습니다.' });
+  s.reviewedAt = Date.now();
+  saveState();
+  pushStudent(s);
   res.json({ ok: true });
 });
 
