@@ -171,6 +171,56 @@ test('자료 보내기: 전체/선택 대상, 권한, 확인 기록, 회수', as
   assert.equal((await call('GET', '/api/student/me', { student: b.token })).data.materials.length, 1);
 });
 
+test('링크(URL) 보내기: 주소 검사, 확인 기록 후 이동, 회수', async () => {
+  const { data: { token } } = await call('POST', '/api/master/login', { body: { password: 'test-pw' } });
+  const { data: { course } } = await call('POST', '/api/master/courses', { token, body: { name: '링크반', maxStudents: 5 } });
+  const a = (await call('POST', '/api/join', { body: { code: course.code, name: '가' } })).data;
+  const b = (await call('POST', '/api/join', { body: { code: course.code, name: '나' } })).data;
+
+  const send = (links, target = 'all', file) => {
+    const form = new FormData();
+    if (file) form.append('files', new Blob(['F']), file);
+    form.append('links', JSON.stringify(links));
+    form.append('note', '수업 링크');
+    form.append('target', target);
+    return call('POST', `/api/master/courses/${course.id}/materials`, { token, body: form });
+  };
+  // javascript: 등 http(s) 가 아닌 주소, 오타는 거부
+  assert.equal((await send([{ url: 'javascript:alert(1)' }])).status, 400);
+  assert.equal((await send([{ url: 'abc' }])).status, 400);
+  assert.equal((await send([])).status, 400, '파일도 링크도 없음');
+
+  // 파일과 링크를 함께, 스킴 없이 입력하면 https:// 를 붙이고 제목이 없으면 주소로 대신
+  const r = await send([{ url: 'www.youtube.com/watch?v=abc', title: '' }, { url: 'https://padlet.com/x', title: '패들렛' }], 'all', '함께.txt');
+  assert.equal(r.status, 200);
+  const [file, yt, pd] = r.data.materials;
+  assert.equal(file.kind, 'file');
+  assert.equal(yt.kind, 'link');
+  assert.equal(yt.url, 'https://www.youtube.com/watch?v=abc');
+  assert.equal(yt.name, 'youtube.com/watch');
+  assert.equal(pd.name, '패들렛');
+
+  const only = (await send([{ url: 'https://example.com/b' }], JSON.stringify([b.studentId]))).data.materials[0];
+  const meA = (await call('GET', '/api/student/me', { student: a.token })).data;
+  assert.ok(!meA.materials.some((m) => m.id === only.id), '대상 아닌 학생에게는 안 보임');
+  assert.equal(meA.materials.find((m) => m.id === yt.id).url, yt.url);
+
+  // 학생이 열면 확인 기록 후 원래 주소로 이동, 대상이 아니면 404
+  const go = (id, t) => fetch(`${BASE}/materials/${id}?t=${t}`, { redirect: 'manual' });
+  assert.equal((await go(only.id, a.token)).status, 404);
+  const res = await go(yt.id, a.token);
+  assert.equal(res.status, 302);
+  assert.equal(res.headers.get('location'), yt.url);
+  const st = (await call('GET', '/api/master/state', { token })).data.materials.find((m) => m.id === yt.id);
+  assert.ok(st.seen[a.studentId]);
+  assert.ok(!st.seen[b.studentId]);
+  assert.equal((await fetch(`${BASE}/materials/${yt.id}/pdf?t=${a.token}`)).status, 415);
+
+  // 회수 (저장된 파일이 없어도 정상 처리)
+  assert.equal((await call('DELETE', `/api/master/materials/${yt.id}`, { token })).status, 200);
+  assert.equal((await go(yt.id, a.token)).status, 404);
+});
+
 // 로그인 차단 테스트는 이 IP 를 15분간 막으므로 항상 마지막에 둔다
 test('로그인 실패가 반복되면 차단', async () => {
   let last;

@@ -187,7 +187,7 @@
   <!-- 자료 보내기 (교사 → 학생) -->
   <div class="modal-bg hidden" id="materialsModal">
     <div class="modal materials">
-      <div class="modal-head"><strong>📤 학생에게 자료 보내기</strong><div class="spacer"></div><button class="icon-btn" data-close aria-label="닫기">✕</button></div>
+      <div class="modal-head"><strong>📤 학생에게 자료·링크 보내기</strong><div class="spacer"></div><button class="icon-btn" data-close aria-label="닫기">✕</button></div>
       <div class="modal-body mat-body">
         <section class="mat-send">
           <label class="dropzone mat-drop" id="matDrop">
@@ -196,6 +196,14 @@
             <div class="dz-title">보낼 파일 선택</div>
             <div class="dz-sub muted">또는 끌어다 놓기 · 여러 개 가능</div>
           </label>
+          <div class="mat-link">
+            <span class="field-label">🔗 링크(URL) 보내기</span>
+            <div class="mat-link-row">
+              <input class="input" id="matUrl" type="url" inputmode="url" placeholder="https://… (유튜브·구글 문서·패들렛 등)">
+              <input class="input" id="matUrlTitle" maxlength="100" placeholder="제목 (선택)">
+              <button class="btn" id="matUrlAdd">추가</button>
+            </div>
+          </div>
           <div id="matPending" class="mat-pending"></div>
           <label class="field"><span>안내 문구 (선택)</span>
             <input class="input" id="matNote" maxlength="300" placeholder="예) 3주차 실습 예제입니다. 수업 전에 받아 두세요.">

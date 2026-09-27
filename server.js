@@ -744,6 +744,7 @@ app.delete('/api/master/students/:id/files/:fileId', requireMaster, async (req, 
 
 // ---------------------------------------------------------------------------
 // 교사 → 학생 자료 보내기
+//   kind:   'file'(파일) 또는 'link'(URL — 파일 없이 주소만 저장)
 //   target: 'all'(과목 전체, 나중에 입장한 학생 포함) 또는 학생 id 배열
 //   seen:   { studentId: 처음 연 시각 } — 교사 화면의 '확인' 표시
 // ---------------------------------------------------------------------------
@@ -753,14 +754,14 @@ const materialsFor = (s) => Object.values(state.materials).filter((m) => canSeeM
 
 function publicMaterial(m) {
   return {
-    id: m.id, courseId: m.courseId, name: m.name, ext: m.ext, size: m.size, mime: m.mime,
-    note: m.note, target: m.target, createdAt: m.createdAt, seen: m.seen,
+    id: m.id, courseId: m.courseId, kind: m.kind || 'file', url: m.url || null, name: m.name, ext: m.ext,
+    size: m.size, mime: m.mime, note: m.note, target: m.target, createdAt: m.createdAt, seen: m.seen,
   };
 }
 function studentMaterial(m, studentId) {
   return {
-    id: m.id, name: m.name, ext: m.ext, size: m.size, mime: m.mime, note: m.note,
-    createdAt: m.createdAt, seenAt: m.seen[studentId] || null,
+    id: m.id, kind: m.kind || 'file', url: m.url || null, name: m.name, ext: m.ext, size: m.size, mime: m.mime,
+    note: m.note, createdAt: m.createdAt, seenAt: m.seen[studentId] || null,
   };
 }
 // 대상 학생들에게만 실시간 알림 (전체 대상이면 과목 방 전체)
@@ -770,6 +771,32 @@ function notifyMaterialTargets(m, event, payloadFor) {
   } else {
     for (const id of m.target) if (state.students[id]) toStudent(id, event, payloadFor(state.students[id]));
   }
+}
+
+// 공유할 URL: http/https 만 허용 (javascript: 등 차단), 'naver.com' 처럼 입력하면 https:// 를 붙임
+function normalizeUrl(raw) {
+  let s = String(raw ?? '').trim();
+  if (!s || s.length > 2000) return null;
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(s)) s = `https://${s}`;
+  let u;
+  try { u = new URL(s); } catch { return null; }
+  if (!['http:', 'https:'].includes(u.protocol)) return null;
+  if (!u.hostname.includes('.') && u.hostname !== 'localhost') return null; // 'abc' 같은 오타 방지
+  return u.href;
+}
+function parseLinks(raw) {
+  if (!raw) return [];
+  let list;
+  try { list = JSON.parse(raw); } catch { list = null; }
+  if (!Array.isArray(list)) throw Object.assign(new Error('링크 형식이 올바르지 않습니다.'), { status: 400 });
+  return list.slice(0, MAX_FILES_PER_UPLOAD).map((x) => {
+    const url = normalizeUrl(x?.url);
+    if (!url) throw Object.assign(new Error(`올바른 인터넷 주소가 아닙니다: ${String(x?.url ?? '').slice(0, 80)}`), { status: 400 });
+    const u = new URL(url);
+    let fallback = u.hostname.replace(/^www\./, '') + (u.pathname === '/' ? '' : u.pathname);
+    try { fallback = decodeURI(fallback); } catch { /* 그대로 사용 */ }
+    return { url, title: cleanText(x?.title, 100) || fallback.slice(0, 100) };
+  });
 }
 
 const materialUpload = multer({
@@ -807,7 +834,9 @@ app.post('/api/master/courses/:id/materials', requireMaster, (req, res) => {
           : err.message;
       return res.status(err.status || 400).json({ error: msg });
     }
-    if (!req.files?.length) return res.status(400).json({ error: '보낼 파일을 선택해 주세요.' });
+    let links;
+    try { links = parseLinks(req.body.links); } catch (e) { cleanup(); return res.status(e.status || 400).json({ error: e.message }); }
+    if (!req.files?.length && !links.length) return res.status(400).json({ error: '보낼 파일이나 링크를 추가해 주세요.' });
     let target = 'all';
     if (req.body.target && req.body.target !== 'all') {
       let ids;
@@ -818,12 +847,18 @@ app.post('/api/master/courses/:id/materials', requireMaster, (req, res) => {
     }
     const note = cleanText(req.body.note, 300);
     const created = [];
-    for (const f of req.files) {
-      const m = {
-        id: f.fileId, courseId: c.id, name: f.originalname, ext: extOf(f.originalname), size: f.size,
+    const records = [
+      ...req.files.map((f) => ({
+        id: f.fileId, courseId: c.id, kind: 'file', name: f.originalname, ext: extOf(f.originalname), size: f.size,
         mime: f.mimetype, stored: path.relative(DATA_DIR, f.path), note, target,
         createdAt: Date.now(), seen: {},
-      };
+      })),
+      ...links.map((l) => ({
+        id: newId(), courseId: c.id, kind: 'link', url: l.url, name: l.title, ext: '', size: 0,
+        mime: '', stored: null, note, target, createdAt: Date.now(), seen: {},
+      })),
+    ];
+    for (const m of records) {
       state.materials[m.id] = m;
       created.push(m);
       toMasters('material:update', publicMaterial(m));
@@ -841,9 +876,11 @@ app.delete('/api/master/materials/:id', requireMaster, async (req, res) => {
   const m = state.materials[req.params.id];
   if (!m) return res.status(404).json({ error: '자료를 찾을 수 없습니다.' });
   delete state.materials[m.id];
-  const abs = path.join(DATA_DIR, m.stored);
-  await fsp.rm(abs, { force: true });
-  await fsp.rm(abs + '.pdf', { force: true });
+  if (m.stored) {
+    const abs = path.join(DATA_DIR, m.stored);
+    await fsp.rm(abs, { force: true });
+    await fsp.rm(abs + '.pdf', { force: true });
+  }
   saveState();
   toMasters('material:remove', { id: m.id });
   notifyMaterialTargets(m, 'material:remove', () => ({ id: m.id }));
@@ -870,6 +907,8 @@ function resolveMaterialAccess(req) {
 app.get('/materials/:id', (req, res) => {
   const a = resolveMaterialAccess(req);
   if (!a) return res.status(404).send('자료를 찾을 수 없습니다.');
+  // 링크: 확인 기록을 남긴 뒤 원래 주소로 이동
+  if (a.m.kind === 'link') return res.redirect(302, a.m.url);
   const abs = path.join(DATA_DIR, a.m.stored);
   if (req.query.download) return res.download(abs, a.m.name);
   res.sendFile(abs, { headers: { 'Content-Type': a.m.mime || 'application/octet-stream' } });
@@ -878,7 +917,7 @@ app.get('/materials/:id', (req, res) => {
 app.get('/materials/:id/pdf', async (req, res) => {
   const a = resolveMaterialAccess(req);
   if (!a) return res.status(404).send('자료를 찾을 수 없습니다.');
-  if (!canConvert || !CONVERTIBLE_EXT.has(a.m.ext)) return res.status(415).send('PDF 변환을 지원하지 않습니다.');
+  if (!canConvert || a.m.kind === 'link' || !CONVERTIBLE_EXT.has(a.m.ext)) return res.status(415).send('PDF 변환을 지원하지 않습니다.');
   try {
     res.type('pdf').sendFile(await convertToPdf(path.join(DATA_DIR, a.m.stored)));
   } catch {

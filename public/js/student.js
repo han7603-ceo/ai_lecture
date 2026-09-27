@@ -349,20 +349,35 @@ function renderMaterials() {
   const newN = list.filter((m) => !m.seenAt).length;
   $('#matNewCount').classList.toggle('hidden', !newN);
   $('#matNewCount').textContent = `NEW ${newN}`;
-  $('#matList').replaceChildren(...list.map((m) => {
-    const open = () => openPreview({
-      name: m.name, ext: m.ext, size: m.size, url: matUrl(m), download: matUrl(m, '&download=1'),
-      pdfUrl: me.canConvert && CONVERTIBLE.has(m.ext) ? `/materials/${m.id}/pdf?t=${encodeURIComponent(token)}` : null,
-    });
-    // 썸네일은 확인(열람)으로 치지 않도록 nt=1
-    const thumb = kindOf(m.ext) === 'image' && m.ext !== 'heic' ? h('img', { src: matUrl(m, '&nt=1'), alt: '' }) : h('span', { class: 'ficon' }, iconOf(m.ext));
-    return h('div', { class: `done-item ${m.seenAt ? '' : 'is-new'}` },
-      h('div', { class: 'dthumb', onclick: open }, thumb),
-      h('div', { class: 'dinfo', onclick: open },
-        h('div', { class: 'dname', title: m.name }, m.seenAt ? null : h('span', { class: 'new-pill' }, 'NEW'), m.name),
-        m.note ? h('div', { class: 'dnote' }, m.note) : null,
-        h('div', { class: 'dsub' }, `${formatBytes(m.size)} · ${timeAgo(m.createdAt)}`)),
-      h('div', { class: 'dact' },
-        h('a', { class: 'icon-btn', href: matUrl(m, '&download=1'), title: '다운로드' }, '⬇️')));
-  }));
+  $('#matList').replaceChildren(...list.map((m) => (m.kind === 'link' ? linkItem(m) : fileItem(m))));
+}
+// 링크: 서버를 거쳐(확인 기록) 새 탭으로 이동
+function linkItem(m) {
+  const href = matUrl(m);
+  let host = m.url;
+  try { host = new URL(m.url).hostname.replace(/^www\./, ''); } catch { /* 그대로 */ }
+  const a = (cls, ...kids) => h('a', { class: cls, href, target: '_blank', rel: 'noopener' }, ...kids);
+  return h('div', { class: `done-item link-item ${m.seenAt ? '' : 'is-new'}` },
+    a('dthumb', '🔗'),
+    a('dinfo',
+      h('div', { class: 'dname', title: m.url }, m.seenAt ? null : h('span', { class: 'new-pill' }, 'NEW'), m.name),
+      m.note ? h('div', { class: 'dnote' }, m.note) : null,
+      h('div', { class: 'dsub' }, `${host} · ${timeAgo(m.createdAt)}`)),
+    h('div', { class: 'dact' }, a('btn sm primary', '열기 ↗')));
+}
+function fileItem(m) {
+  const open = () => openPreview({
+    name: m.name, ext: m.ext, size: m.size, url: matUrl(m), download: matUrl(m, '&download=1'),
+    pdfUrl: me.canConvert && CONVERTIBLE.has(m.ext) ? `/materials/${m.id}/pdf?t=${encodeURIComponent(token)}` : null,
+  });
+  // 썸네일은 확인(열람)으로 치지 않도록 nt=1
+  const thumb = kindOf(m.ext) === 'image' && m.ext !== 'heic' ? h('img', { src: matUrl(m, '&nt=1'), alt: '' }) : h('span', { class: 'ficon' }, iconOf(m.ext));
+  return h('div', { class: `done-item ${m.seenAt ? '' : 'is-new'}` },
+    h('div', { class: 'dthumb', onclick: open }, thumb),
+    h('div', { class: 'dinfo', onclick: open },
+      h('div', { class: 'dname', title: m.name }, m.seenAt ? null : h('span', { class: 'new-pill' }, 'NEW'), m.name),
+      m.note ? h('div', { class: 'dnote' }, m.note) : null,
+      h('div', { class: 'dsub' }, `${formatBytes(m.size)} · ${timeAgo(m.createdAt)}`)),
+    h('div', { class: 'dact' },
+      h('a', { class: 'icon-btn', href: matUrl(m, '&download=1'), title: '다운로드' }, '⬇️')));
 }
