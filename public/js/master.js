@@ -663,6 +663,7 @@ $('#pwNoticeBtn').addEventListener('click', changePassword);
 // ------------------------------------------------------------ 자료 보내기 (교사 → 학생)
 const matUrl = (m, dl) => `/materials/${m.id}?t=${encodeURIComponent(token)}${dl ? '&download=1' : ''}`;
 let matFiles = []; // 보낼 파일
+let matLinks = []; // 보낼 링크 { url, title }
 let matTarget = 'all';
 const matSelected = new Set();
 
@@ -698,13 +699,45 @@ function addMatFiles(list) {
   }
   renderMatPending();
 }
+// 링크 추가 (서버에서 한 번 더 검사)
+function normalizeUrl(raw) {
+  let s = raw.trim();
+  if (!s) return null;
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(s)) s = `https://${s}`;
+  try {
+    const u = new URL(s);
+    return ['http:', 'https:'].includes(u.protocol) && (u.hostname.includes('.') || u.hostname === 'localhost') ? u.href : null;
+  } catch { return null; }
+}
+function addMatLink() {
+  const url = normalizeUrl($('#matUrl').value);
+  if (!url) { toast('올바른 인터넷 주소를 입력해 주세요. (예: https://www.youtube.com/…)', 'error'); return $('#matUrl').focus(); }
+  matLinks.push({ url, title: $('#matUrlTitle').value.trim() });
+  $('#matUrl').value = '';
+  $('#matUrlTitle').value = '';
+  renderMatPending();
+  $('#matUrl').focus();
+}
+$('#matUrlAdd').addEventListener('click', addMatLink);
+for (const id of ['#matUrl', '#matUrlTitle']) {
+  $(id).addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); addMatLink(); } });
+}
+const hostOf = (url) => { try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; } };
+
 function renderMatPending() {
-  $('#matPending').replaceChildren(...matFiles.map((f) => h('div', { class: 'mp-row' },
-    h('span', {}, iconOf(extOf(f.name))),
-    h('span', { class: 'mp-name', title: f.name }, f.name),
-    h('span', { class: 'muted small' }, formatBytes(f.size)),
-    h('button', { class: 'icon-btn', title: '빼기', onclick: () => { matFiles = matFiles.filter((x) => x !== f); renderMatPending(); } }, '✕'))));
-  $('#matSendBtn').textContent = matFiles.length ? `보내기 (${matFiles.length}개)` : '보내기';
+  $('#matPending').replaceChildren(
+    ...matFiles.map((f) => h('div', { class: 'mp-row' },
+      h('span', {}, iconOf(extOf(f.name))),
+      h('span', { class: 'mp-name', title: f.name }, f.name),
+      h('span', { class: 'muted small' }, formatBytes(f.size)),
+      h('button', { class: 'icon-btn', title: '빼기', onclick: () => { matFiles = matFiles.filter((x) => x !== f); renderMatPending(); } }, '✕'))),
+    ...matLinks.map((l) => h('div', { class: 'mp-row' },
+      h('span', {}, '🔗'),
+      h('span', { class: 'mp-name', title: l.url }, l.title || l.url),
+      h('span', { class: 'muted small' }, hostOf(l.url)),
+      h('button', { class: 'icon-btn', title: '빼기', onclick: () => { matLinks = matLinks.filter((x) => x !== l); renderMatPending(); } }, '✕'))));
+  const n = matFiles.length + matLinks.length;
+  $('#matSendBtn').textContent = n ? `보내기 (${n}개)` : '보내기';
 }
 
 // 받는 학생
@@ -740,10 +773,17 @@ $('#matPickNone').addEventListener('click', () => { matSelected.clear(); renderM
 // 보내기 (업로드 진행률 표시)
 $('#matSendBtn').addEventListener('click', () => {
   const c = course();
-  if (!matFiles.length) return toast('보낼 파일을 선택해 주세요.', 'error');
+  // 입력만 하고 '추가'를 안 누른 주소도 함께 보냄
+  if ($('#matUrl').value.trim()) {
+    const before = matLinks.length;
+    addMatLink();
+    if (matLinks.length === before) return;
+  }
+  if (!matFiles.length && !matLinks.length) return toast('보낼 파일이나 링크를 추가해 주세요.', 'error');
   if (matTarget === 'some' && !matSelected.size) return toast('받을 학생을 선택해 주세요.', 'error');
   const form = new FormData();
   for (const f of matFiles) form.append('files', f, f.name);
+  if (matLinks.length) form.append('links', JSON.stringify(matLinks));
   form.append('note', $('#matNote').value);
   form.append('target', matTarget === 'all' ? 'all' : JSON.stringify([...matSelected]));
   const xhr = new XMLHttpRequest();
@@ -764,8 +804,9 @@ $('#matSendBtn').addEventListener('click', () => {
     try { data = JSON.parse(xhr.responseText); } catch { /* 무시 */ }
     if (xhr.status >= 200 && xhr.status < 300) {
       const who = matTarget === 'all' ? '전체 학생' : `${matSelected.size}명`;
-      toast(`${who}에게 자료 ${matFiles.length}개를 보냈습니다. 📤`, 'ok');
+      toast(`${who}에게 자료 ${matFiles.length + matLinks.length}개를 보냈습니다. 📤`, 'ok');
       matFiles = [];
+      matLinks = [];
       $('#matNote').value = '';
       renderMatPending();
     } else {
@@ -790,15 +831,20 @@ function renderMaterials() {
     const rec = recipientsOf(m);
     const seenN = rec.filter((s) => m.seen[s.id]).length;
     const targetLabel = m.target === 'all' ? '전체 학생' : `${rec.length}명 (${rec.slice(0, 3).map((s) => s.name).join(', ')}${rec.length > 3 ? ' 외' : ''})`;
-    const isImg = kindOf(m.ext) === 'image' && m.ext !== 'heic';
+    const isLink = m.kind === 'link';
+    const isImg = !isLink && kindOf(m.ext) === 'image' && m.ext !== 'heic';
+    // 링크는 교사가 눌러도 학생 '확인'으로 치지 않도록 원래 주소로 바로 연다
+    const open = () => (isLink ? window.open(m.url, '_blank', 'noopener') : openMatPreview(m));
     return h('div', { class: 'mat-item' },
       h('div', { class: 'mat-item-top' },
-        h('div', { class: 'mat-ico', onclick: () => openMatPreview(m) }, isImg ? h('img', { src: matUrl(m), alt: '', loading: 'lazy' }) : iconOf(m.ext)),
-        h('div', { class: 'mat-info', onclick: () => openMatPreview(m) },
-          h('div', { class: 'mat-name', title: m.name }, m.name),
-          h('div', { class: 'mat-sub' }, `${formatBytes(m.size)} · ${timeAgo(m.createdAt)} · 받는 사람: ${targetLabel}`)),
+        h('div', { class: 'mat-ico', onclick: open }, isLink ? '🔗' : isImg ? h('img', { src: matUrl(m), alt: '', loading: 'lazy' }) : iconOf(m.ext)),
+        h('div', { class: 'mat-info', onclick: open },
+          h('div', { class: 'mat-name', title: isLink ? m.url : m.name }, m.name),
+          h('div', { class: 'mat-sub' }, `${isLink ? hostOf(m.url) : formatBytes(m.size)} · ${timeAgo(m.createdAt)} · 받는 사람: ${targetLabel}`)),
         h('span', { class: `badge ${rec.length && seenN === rec.length ? 'ok' : 'primary'}`, title: '자료를 열어 본 학생 수' }, `확인 ${seenN}/${rec.length}`),
-        h('a', { class: 'icon-btn', href: matUrl(m, true), title: '다운로드' }, '⬇️'),
+        isLink
+          ? h('a', { class: 'icon-btn', href: m.url, target: '_blank', rel: 'noopener', title: '링크 열기' }, '↗️')
+          : h('a', { class: 'icon-btn', href: matUrl(m, true), title: '다운로드' }, '⬇️'),
         h('button', { class: 'icon-btn', title: '회수(삭제)', onclick: () => recallMaterial(m) }, '🗑️')),
       m.note ? h('p', { class: 'mat-note' }, m.note) : null,
       rec.length ? h('details', { class: 'mat-seen' },

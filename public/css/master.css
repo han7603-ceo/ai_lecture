@@ -166,6 +166,9 @@ mark { background: color-mix(in srgb, var(--warn) 45%, transparent); color: inhe
 .mat-send, .mat-sent { min-height: 0; overflow: auto; }
 .mat-sent h3 { margin: 0 0 10px; font-size: 16px; display: flex; gap: 6px; align-items: center; }
 .mat-drop { padding: 18px 12px; margin-bottom: 10px; }
+.mat-link { margin-bottom: 10px; }
+.mat-link-row { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) auto; gap: 6px; }
+@media (max-width: 560px) { .mat-link-row { grid-template-columns: 1fr auto; } .mat-link-row #matUrl { grid-column: 1 / -1; } }
 .mat-pending { display: grid; gap: 6px; margin-bottom: 12px; }
 .mat-pending .mp-row { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 10px; font-size: 14px; }
 .mp-row .mp-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
