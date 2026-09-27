@@ -185,7 +185,8 @@ const studentsOf = (courseId) =>
 // 서버 / 소켓
 // ---------------------------------------------------------------------------
 const app = express();
-app.set('trust proxy', true);
+// 클라우드(Railway 등) 앞단 프록시 1단계만 신뢰 → X-Forwarded-For 위조로 IP 를 속이기 어렵게
+app.set('trust proxy', 1);
 const server = http.createServer(app);
 const io = new Server(server, { maxHttpBufferSize: 1e6 });
 
@@ -502,10 +503,35 @@ app.get('/files/:fileId/pdf', async (req, res) => {
 // ---------------------------------------------------------------------------
 // 교사(마스터) API
 // ---------------------------------------------------------------------------
+// 로그인 무차별 대입 방지: 15분 동안 IP 당 10회, 전체 100회 실패 시 잠시 차단
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const loginFails = new Map(); // ip -> { count, since }
+let globalFails = { count: 0, since: Date.now() };
+function tooManyLoginFails(ip) {
+  const now = Date.now();
+  if (now - globalFails.since > LOGIN_WINDOW_MS) globalFails = { count: 0, since: now };
+  const f = loginFails.get(ip);
+  if (f && now - f.since > LOGIN_WINDOW_MS) loginFails.delete(ip);
+  return (loginFails.get(ip)?.count || 0) >= 10 || globalFails.count >= 100;
+}
+function recordLoginFail(ip) {
+  const f = loginFails.get(ip) || { count: 0, since: Date.now() };
+  f.count++;
+  loginFails.set(ip, f);
+  globalFails.count++;
+  if (loginFails.size > 10000) loginFails.clear();
+}
+
 app.post('/api/master/login', (req, res) => {
+  const ip = req.ip || 'unknown';
+  if (tooManyLoginFails(ip)) {
+    return res.status(429).json({ error: '로그인 시도가 너무 많습니다. 15분 후 다시 시도하세요.' });
+  }
   if (!verifyPassword(req.body.password || '', state.passwordHash)) {
+    recordLoginFail(ip);
     return res.status(401).json({ error: '비밀번호가 올바르지 않습니다.' });
   }
+  loginFails.delete(ip);
   const token = newToken();
   masterTokens.add(token);
   res.json({ token });
