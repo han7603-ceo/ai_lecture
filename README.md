@@ -82,7 +82,8 @@ npm run online       # 외부 접속 모드 (Cloudflare 터널)
 
 ### 외부 서버 배포 (Railway 등)
 
-일반적인 Node.js 앱으로 배포하면 됩니다. `npm start`로 실행되며 `PORT` 환경 변수를 따릅니다.
+일반적인 Node.js 앱으로 배포하면 됩니다. `PORT` 환경 변수를 따릅니다.
+Railway 는 저장소의 `railway.json` 에 따라 `exec node server.js` 로 실행합니다 (`npm start` 를 거치면 재배포 때 종료 신호가 서버에 전달되지 않아 저장 없이 강제 종료되고 '배포 실패' 메일이 옵니다).
 
 **Railway 권장 설정**
 - GitHub 저장소를 연결해 서비스를 만들면 `main`에 push할 때마다 자동 배포됩니다.
