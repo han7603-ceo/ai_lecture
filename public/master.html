@@ -63,6 +63,15 @@
           <button data-f="done">제출</button>
           <button data-f="none">미제출</button>
         </div>
+        <div class="seg" id="viewSeg" title="좌석 박스 표시 방식">
+          <button data-v="list">📄 파일 목록</button>
+          <button data-v="thumb">🖼️ 썸네일</button>
+        </div>
+        <select class="input sort" id="sortSelect" aria-label="정렬">
+          <option value="seat">자리 순서</option>
+          <option value="recent">최근 제출순</option>
+          <option value="new">확인 필요 우선</option>
+        </select>
         <label class="switch-row inline"><input type="checkbox" id="hideEmpty"> 빈 자리 숨기기</label>
       </div>
     </section>

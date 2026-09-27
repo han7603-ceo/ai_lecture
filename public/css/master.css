@@ -135,3 +135,27 @@ mark { background: color-mix(in srgb, var(--warn) 45%, transparent); color: inhe
 }
 
 .switch-row.inline { margin: 0; font-size: 14px; color: var(--muted); cursor: pointer; }
+
+/* ---------- 좌석 박스: 파일 목록 보기 / NEW ---------- */
+.sort { width: auto; min-height: 40px; }
+.stat.new b { color: var(--danger); }
+.seat.has-new { border-color: var(--danger); }
+.new-badge {
+  flex: none; font-size: 11px; font-weight: 800; color: #fff; background: var(--danger);
+  border-radius: 999px; padding: 1px 7px; animation: pulse 1.8s ease-in-out infinite;
+}
+@keyframes pulse { 50% { opacity: .55; } }
+.new-tag {
+  flex: none; display: inline-block; font-size: 10px; font-weight: 800; color: var(--danger);
+  border: 1px solid var(--danger); border-radius: 4px; padding: 0 4px; line-height: 15px; margin-right: 4px; vertical-align: 1px;
+}
+.seat-files { flex: 1; min-height: 0; overflow: hidden; padding: 2px 8px 0; display: flex; flex-direction: column; border-top: 1px solid var(--line); }
+.sf-row { display: flex; align-items: center; gap: 6px; height: 24px; flex: none; font-size: 12.5px; min-width: 0; }
+.sf-row + .sf-row { border-top: 1px dashed var(--line); }
+.sf-row.is-new .sf-name { font-weight: 800; }
+.sf-ico { width: 18px; text-align: center; flex: none; font-size: 14px; }
+.sf-thumb { width: 18px; height: 18px; object-fit: cover; border-radius: 3px; flex: none; background: var(--panel-2); }
+.sf-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sf-row .new-tag { margin: 0; }
+.sf-more { font-size: 12px; color: var(--muted); padding-top: 2px; flex: none; }
+@media (max-width: 760px) { .sort { flex: 1; } }

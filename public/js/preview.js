@@ -74,17 +74,19 @@ export async function renderPreview(box, src) {
     }[src.ext];
 
     if (clientRender) {
-      if (src.pdfUrl) {
-        box.append(h('div', { class: 'pv-toolbar' },
-          h('span', { class: 'muted' }, '간이 미리보기입니다.'),
-          h('button', {
-            class: 'btn sm',
-            onclick: () => { box.innerHTML = ''; renderPdf(box, src.pdfUrl, null, alive, '원본 레이아웃으로 변환하는 중… (최대 1분)'); },
-          }, '원본 레이아웃(PDF)으로 보기')));
+      const simple = async (note) => {
+        if (!alive()) return;
+        if (note) box.append(h('div', { class: 'pv-toolbar' }, h('span', { class: 'muted' }, note)));
+        const area = h('div');
+        box.append(area);
+        await clientRender(area, src, alive);
+      };
+      // 서버에서 PDF 로 변환할 수 있으면 원본 레이아웃(슬라이드·페이지 모양 그대로)을 우선 표시
+      if (src.pdfUrl && src.ext !== 'hwpx') {
+        return await renderPdf(box, src.pdfUrl, null, alive, '원본 레이아웃으로 불러오는 중… (처음 여는 문서는 최대 1분)',
+          () => simple('⚠ 원본 레이아웃 변환에 실패해 간이 미리보기로 표시합니다.'));
       }
-      const area = h('div');
-      box.append(area);
-      return await clientRender(area, src, alive);
+      return await simple(src.ext === 'hwpx' ? null : '간이 미리보기입니다. (원본 모양은 다운로드해서 확인하세요)');
     }
 
     if (src.pdfUrl) {
@@ -102,7 +104,7 @@ export async function renderPreview(box, src) {
 }
 
 // ---------------------------------------------------------------- PDF
-async function renderPdf(box, url, blob, alive, msg) {
+async function renderPdf(box, url, blob, alive, msg, onFail) {
   const ld = loading(msg);
   box.append(ld);
   let pdfjs;
@@ -124,6 +126,7 @@ async function renderPdf(box, url, blob, alive, msg) {
   } catch (e) {
     ld.remove();
     if (!alive()) return;
+    if (onFail) return onFail(e);
     box.append(h('div', { class: 'pv-empty' },
       h('div', { class: 'pv-empty-icon' }, '⚠️'),
       h('p', { class: 'muted' }, e?.status === 500 || e?.status === 415
