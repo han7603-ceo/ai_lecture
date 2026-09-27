@@ -38,6 +38,7 @@
       <div class="spacer"></div>
       <div class="top-actions">
         <button class="btn primary" id="joinInfoBtn">📱 입장 안내 (QR)</button>
+        <button class="btn" id="materialsBtn">📤 자료 보내기</button>
         <button class="btn" id="zipAllBtn">🗜️ 전체 ZIP</button>
         <button class="btn" id="settingsBtn">⚙️ 설정</button>
         <button class="btn ghost" id="logoutBtn" title="로그아웃">⎋</button>
@@ -109,6 +110,7 @@
         <aside class="detail-files">
           <div class="detail-actions">
             <a class="btn sm primary" id="dZip">🗜️ 이 학생 ZIP</a>
+            <button class="btn sm" id="dSendMat">📤 자료 보내기</button>
             <button class="btn sm" id="dKick">🚪 학생 삭제</button>
           </div>
           <div id="dFiles"></div>
@@ -179,6 +181,64 @@
         <div class="row-actions"><button class="btn" id="sPw">교사 비밀번호 변경</button></div>
         <p class="muted small" id="sInfo"></p>
       </div>
+    </div>
+  </div>
+
+  <!-- 자료 보내기 (교사 → 학생) -->
+  <div class="modal-bg hidden" id="materialsModal">
+    <div class="modal materials">
+      <div class="modal-head"><strong>📤 학생에게 자료 보내기</strong><div class="spacer"></div><button class="icon-btn" data-close aria-label="닫기">✕</button></div>
+      <div class="modal-body mat-body">
+        <section class="mat-send">
+          <label class="dropzone mat-drop" id="matDrop">
+            <input type="file" id="matInput" multiple hidden>
+            <div class="dz-icon">📎</div>
+            <div class="dz-title">보낼 파일 선택</div>
+            <div class="dz-sub muted">또는 끌어다 놓기 · 여러 개 가능</div>
+          </label>
+          <div id="matPending" class="mat-pending"></div>
+          <label class="field"><span>안내 문구 (선택)</span>
+            <input class="input" id="matNote" maxlength="300" placeholder="예) 3주차 실습 예제입니다. 수업 전에 받아 두세요.">
+          </label>
+          <div class="field">
+            <span class="field-label">받는 학생</span>
+            <div class="seg" id="matTargetSeg">
+              <button data-v="all" class="active">전체 학생</button>
+              <button data-v="some">선택한 학생</button>
+            </div>
+            <p class="muted small" id="matAllHint">지금 과목의 모든 학생이 받습니다. 나중에 입장하는 학생도 받습니다.</p>
+            <div class="mat-pick hidden" id="matPick">
+              <div class="mat-pick-head">
+                <span class="muted small" id="matPickCount"></span>
+                <div class="spacer"></div>
+                <button class="btn sm ghost" id="matPickAll">전체 선택</button>
+                <button class="btn sm ghost" id="matPickNone">선택 해제</button>
+              </div>
+              <div class="mat-pick-list" id="matPickList"></div>
+            </div>
+          </div>
+          <div class="progress hidden" id="matProgress"><div class="bar" id="matProgressBar"></div><span id="matProgressText"></span></div>
+          <button class="btn primary lg block" id="matSendBtn">보내기</button>
+        </section>
+        <section class="mat-sent">
+          <h3>보낸 자료 <span class="badge primary" id="matSentCount">0</span></h3>
+          <div id="matSentList"></div>
+          <p class="muted empty-text" id="matSentEmpty">아직 보낸 자료가 없습니다.</p>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <!-- 자료 미리보기 -->
+  <div class="modal-bg hidden" id="matPvModal">
+    <div class="modal">
+      <div class="modal-head">
+        <strong id="matPvTitle"></strong>
+        <div class="spacer"></div>
+        <a class="btn sm" id="matPvDownload">⬇️ 다운로드</a>
+        <button class="icon-btn" data-close aria-label="닫기">✕</button>
+      </div>
+      <div class="modal-body"><div id="matPvBox" class="preview"></div></div>
     </div>
   </div>
 

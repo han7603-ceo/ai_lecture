@@ -1,5 +1,5 @@
 import {
-  $, $$, h, api, toast, formatBytes, timeAgo, clock, iconOf, kindOf, confirmDialog, promptDialog,
+  $, $$, h, api, toast, formatBytes, timeAgo, clock, iconOf, kindOf, extOf, ACCEPT, confirmDialog, promptDialog,
 } from './common.js';
 import { renderPreview, thumbFor } from './preview.js';
 
@@ -98,6 +98,7 @@ function connectSocket() {
     }
     if (sortMode === 'seat') updateSeat(s, flash); else renderGrid();
     renderStats();
+    if (!$('#materialsModal').classList.contains('hidden')) renderMaterials();
   });
   socket.on('student:remove', ({ id, courseId: cid }) => {
     students.delete(id);
@@ -109,6 +110,15 @@ function connectSocket() {
     if (i >= 0) S.courses[i] = c; else S.courses.push(c);
     renderCourseSelect();
     if (c.id === courseId) { renderCourseBar(); renderGrid(); }
+  });
+  socket.on('material:update', (m) => {
+    const i = S.materials.findIndex((x) => x.id === m.id);
+    if (i >= 0) S.materials[i] = m; else S.materials.push(m);
+    renderMaterials();
+  });
+  socket.on('material:remove', ({ id }) => {
+    S.materials = S.materials.filter((m) => m.id !== id);
+    renderMaterials();
   });
   socket.on('course:remove', ({ id }) => {
     S.courses = S.courses.filter((c) => c.id !== id);
@@ -412,7 +422,10 @@ $('#dPrev').addEventListener('click', () => stepDetail(-1));
 $('#dNext').addEventListener('click', () => stepDetail(1));
 $('#detailModal').addEventListener('click', (e) => { if (e.target.id === 'detailModal') closeDetail(); });
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') { closeDetail(); closeModal('#joinModal'); closeModal('#settingsModal'); }
+  if (e.key === 'Escape') {
+    if (!$('#matPvModal').classList.contains('hidden')) return closeMatPreview();
+    closeDetail(); closeModal('#joinModal'); closeModal('#settingsModal'); closeModal('#materialsModal');
+  }
   if (detailId && !e.target.closest('input, textarea, select')) {
     if (e.key === 'ArrowLeft') stepDetail(-1);
     if (e.key === 'ArrowRight') stepDetail(1);
@@ -551,7 +564,7 @@ $('#joinInfoBtn').addEventListener('click', openJoin);
 $('#codeChip').addEventListener('click', openJoin);
 $('#joinClose').addEventListener('click', () => closeModal('#joinModal'));
 function closeModal(sel) { $(sel).classList.add('hidden'); }
-for (const id of ['#joinModal', '#settingsModal']) {
+for (const id of ['#joinModal', '#settingsModal', '#materialsModal', '#matPvModal']) {
   $(id).addEventListener('click', (e) => { if (e.target.id === id.slice(1) || e.target.closest('[data-close]')) closeModal(id); });
 }
 
@@ -646,3 +659,175 @@ async function changePassword() {
 }
 $('#sPw').addEventListener('click', changePassword);
 $('#pwNoticeBtn').addEventListener('click', changePassword);
+
+// ------------------------------------------------------------ 자료 보내기 (교사 → 학생)
+const matUrl = (m, dl) => `/materials/${m.id}?t=${encodeURIComponent(token)}${dl ? '&download=1' : ''}`;
+let matFiles = []; // 보낼 파일
+let matTarget = 'all';
+const matSelected = new Set();
+
+function openMaterials(preselectId) {
+  if (!course()) return;
+  S.materials ||= [];
+  if (preselectId) {
+    matTarget = 'some';
+    matSelected.clear();
+    matSelected.add(preselectId);
+  }
+  $$('#matTargetSeg button').forEach((b) => b.classList.toggle('active', b.dataset.v === matTarget));
+  renderMatPick();
+  renderMatPending();
+  renderMaterials();
+  $('#materialsModal').classList.remove('hidden');
+}
+$('#materialsBtn').addEventListener('click', () => openMaterials());
+$('#dSendMat').addEventListener('click', () => { const id = detailId; closeDetail(); openMaterials(id); });
+
+// 파일 선택
+$('#matInput').addEventListener('change', (e) => { addMatFiles(e.target.files); e.target.value = ''; });
+$('#matDrop').addEventListener('dragover', (e) => { e.preventDefault(); $('#matDrop').classList.add('over'); });
+$('#matDrop').addEventListener('dragleave', () => $('#matDrop').classList.remove('over'));
+$('#matDrop').addEventListener('drop', (e) => { e.preventDefault(); $('#matDrop').classList.remove('over'); addMatFiles(e.dataTransfer.files); });
+$('#matInput').accept = ACCEPT;
+function addMatFiles(list) {
+  const allowed = new Set(ACCEPT.split(',').map((x) => x.slice(1)));
+  for (const f of list) {
+    if (!allowed.has(extOf(f.name))) { toast(`지원하지 않는 형식: ${f.name}`, 'error'); continue; }
+    if (f.size > S.maxFileMB * 1024 * 1024) { toast(`${S.maxFileMB}MB 초과: ${f.name}`, 'error'); continue; }
+    matFiles.push(f);
+  }
+  renderMatPending();
+}
+function renderMatPending() {
+  $('#matPending').replaceChildren(...matFiles.map((f) => h('div', { class: 'mp-row' },
+    h('span', {}, iconOf(extOf(f.name))),
+    h('span', { class: 'mp-name', title: f.name }, f.name),
+    h('span', { class: 'muted small' }, formatBytes(f.size)),
+    h('button', { class: 'icon-btn', title: '빼기', onclick: () => { matFiles = matFiles.filter((x) => x !== f); renderMatPending(); } }, '✕'))));
+  $('#matSendBtn').textContent = matFiles.length ? `보내기 (${matFiles.length}개)` : '보내기';
+}
+
+// 받는 학생
+$('#matTargetSeg').addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  matTarget = b.dataset.v;
+  $$('#matTargetSeg button').forEach((x) => x.classList.toggle('active', x === b));
+  renderMatPick();
+});
+function renderMatPick() {
+  const some = matTarget === 'some';
+  $('#matPick').classList.toggle('hidden', !some);
+  $('#matAllHint').classList.toggle('hidden', some);
+  const list = courseStudents();
+  for (const id of [...matSelected]) if (!list.some((s) => s.id === id)) matSelected.delete(id);
+  $('#matPickList').replaceChildren(...(list.length ? list.map((s) => {
+    const cb = h('input', { type: 'checkbox', checked: matSelected.has(s.id) });
+    const label = h('label', { class: matSelected.has(s.id) ? 'on' : '' }, cb,
+      h('span', { class: `dot ${s.online ? 'on' : ''}` }), `${s.seat}. ${s.name}`);
+    cb.addEventListener('change', () => {
+      if (cb.checked) matSelected.add(s.id); else matSelected.delete(s.id);
+      label.classList.toggle('on', cb.checked);
+      $('#matPickCount').textContent = `${matSelected.size}명 선택`;
+    });
+    return label;
+  }) : [h('p', { class: 'muted small' }, '아직 입장한 학생이 없습니다.')]));
+  $('#matPickCount').textContent = `${matSelected.size}명 선택`;
+}
+$('#matPickAll').addEventListener('click', () => { courseStudents().forEach((s) => matSelected.add(s.id)); renderMatPick(); });
+$('#matPickNone').addEventListener('click', () => { matSelected.clear(); renderMatPick(); });
+
+// 보내기 (업로드 진행률 표시)
+$('#matSendBtn').addEventListener('click', () => {
+  const c = course();
+  if (!matFiles.length) return toast('보낼 파일을 선택해 주세요.', 'error');
+  if (matTarget === 'some' && !matSelected.size) return toast('받을 학생을 선택해 주세요.', 'error');
+  const form = new FormData();
+  for (const f of matFiles) form.append('files', f, f.name);
+  form.append('note', $('#matNote').value);
+  form.append('target', matTarget === 'all' ? 'all' : JSON.stringify([...matSelected]));
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', `/api/master/courses/${c.id}/materials`);
+  xhr.setRequestHeader('x-master-token', token);
+  $('#matSendBtn').disabled = true;
+  $('#matProgress').classList.remove('hidden');
+  xhr.upload.onprogress = (e) => {
+    if (!e.lengthComputable) return;
+    const pct = Math.round((e.loaded / e.total) * 100);
+    $('#matProgressBar').style.width = `${pct}%`;
+    $('#matProgressText').textContent = pct < 100 ? `보내는 중… ${pct}%` : '저장 중…';
+  };
+  const done = () => { $('#matSendBtn').disabled = false; $('#matProgress').classList.add('hidden'); $('#matProgressBar').style.width = '0'; };
+  xhr.onload = () => {
+    done();
+    let data = {};
+    try { data = JSON.parse(xhr.responseText); } catch { /* 무시 */ }
+    if (xhr.status >= 200 && xhr.status < 300) {
+      const who = matTarget === 'all' ? '전체 학생' : `${matSelected.size}명`;
+      toast(`${who}에게 자료 ${matFiles.length}개를 보냈습니다. 📤`, 'ok');
+      matFiles = [];
+      $('#matNote').value = '';
+      renderMatPending();
+    } else {
+      toast(data.error || '보내지 못했습니다.', 'error', 4000);
+    }
+  };
+  xhr.onerror = () => { done(); toast('네트워크 오류로 보내지 못했습니다.', 'error'); };
+  xhr.send(form);
+});
+
+// 보낸 자료 목록 (학생별 확인 여부)
+function recipientsOf(m) {
+  const list = courseStudents();
+  return m.target === 'all' ? list : list.filter((s) => m.target.includes(s.id));
+}
+function renderMaterials() {
+  if (!S?.materials || !course()) return;
+  const mats = S.materials.filter((m) => m.courseId === courseId).sort((a, b) => b.createdAt - a.createdAt);
+  $('#matSentCount').textContent = mats.length;
+  $('#matSentEmpty').classList.toggle('hidden', mats.length > 0);
+  $('#matSentList').replaceChildren(...mats.map((m) => {
+    const rec = recipientsOf(m);
+    const seenN = rec.filter((s) => m.seen[s.id]).length;
+    const targetLabel = m.target === 'all' ? '전체 학생' : `${rec.length}명 (${rec.slice(0, 3).map((s) => s.name).join(', ')}${rec.length > 3 ? ' 외' : ''})`;
+    const isImg = kindOf(m.ext) === 'image' && m.ext !== 'heic';
+    return h('div', { class: 'mat-item' },
+      h('div', { class: 'mat-item-top' },
+        h('div', { class: 'mat-ico', onclick: () => openMatPreview(m) }, isImg ? h('img', { src: matUrl(m), alt: '', loading: 'lazy' }) : iconOf(m.ext)),
+        h('div', { class: 'mat-info', onclick: () => openMatPreview(m) },
+          h('div', { class: 'mat-name', title: m.name }, m.name),
+          h('div', { class: 'mat-sub' }, `${formatBytes(m.size)} · ${timeAgo(m.createdAt)} · 받는 사람: ${targetLabel}`)),
+        h('span', { class: `badge ${rec.length && seenN === rec.length ? 'ok' : 'primary'}`, title: '자료를 열어 본 학생 수' }, `확인 ${seenN}/${rec.length}`),
+        h('a', { class: 'icon-btn', href: matUrl(m, true), title: '다운로드' }, '⬇️'),
+        h('button', { class: 'icon-btn', title: '회수(삭제)', onclick: () => recallMaterial(m) }, '🗑️')),
+      m.note ? h('p', { class: 'mat-note' }, m.note) : null,
+      rec.length ? h('details', { class: 'mat-seen' },
+        h('summary', {}, '학생별 확인 여부'),
+        h('div', { class: 'mat-seen-list' }, rec.map((s) => h('span', {
+          class: m.seen[s.id] ? 'yes' : '', title: m.seen[s.id] ? `${clock(m.seen[s.id])} 확인` : '아직 안 봄',
+        }, `${m.seen[s.id] ? '✓' : '·'} ${s.seat}. ${s.name}`)))) : null);
+  }));
+}
+async function recallMaterial(m) {
+  if (!(await confirmDialog(`'${m.name}' 자료를 회수할까요?\n학생 화면에서도 사라집니다.`, { ok: '회수', danger: true }))) return;
+  try { await api(`/api/master/materials/${m.id}`, { method: 'DELETE', headers: H() }); toast('회수했습니다.'); } catch (e) { toast(e.message, 'error'); }
+}
+
+// 자료 미리보기 (교사가 열어도 학생 '확인'으로 치지 않음)
+function openMatPreview(m) {
+  $('#matPvTitle').textContent = m.name;
+  $('#matPvDownload').href = matUrl(m, true);
+  $('#matPvModal').classList.remove('hidden');
+  renderPreview($('#matPvBox'), {
+    name: m.name, ext: m.ext, size: m.size, url: matUrl(m),
+    pdfUrl: S.canConvert && CONVERTIBLE.has(m.ext) ? `/materials/${m.id}/pdf?t=${encodeURIComponent(token)}` : null,
+  });
+}
+function closeMatPreview() {
+  const box = $('#matPvBox');
+  box._token = null;
+  box.querySelectorAll('video, audio').forEach((x) => x.pause());
+  box.innerHTML = '';
+  closeModal('#matPvModal');
+}
+$('#matPvModal').addEventListener('click', (e) => { if (e.target.id === 'matPvModal' || e.target.closest('[data-close]')) closeMatPreview(); });

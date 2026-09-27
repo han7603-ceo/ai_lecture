@@ -159,3 +159,40 @@ mark { background: color-mix(in srgb, var(--warn) 45%, transparent); color: inhe
 .sf-row .new-tag { margin: 0; }
 .sf-more { font-size: 12px; color: var(--muted); padding-top: 2px; flex: none; }
 @media (max-width: 760px) { .sort { flex: 1; } }
+
+/* ---------- 자료 보내기 ---------- */
+.modal.materials { width: min(1100px, 100%); height: calc(100dvh - 32px); }
+.mat-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 20px; flex: 1; min-height: 0; }
+.mat-send, .mat-sent { min-height: 0; overflow: auto; }
+.mat-sent h3 { margin: 0 0 10px; font-size: 16px; display: flex; gap: 6px; align-items: center; }
+.mat-drop { padding: 18px 12px; margin-bottom: 10px; }
+.mat-pending { display: grid; gap: 6px; margin-bottom: 12px; }
+.mat-pending .mp-row { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 10px; font-size: 14px; }
+.mp-row .mp-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.field-label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; font-weight: 600; }
+#matTargetSeg { margin-bottom: 6px; }
+.mat-pick { border: 1px solid var(--line); border-radius: 12px; padding: 8px; margin-top: 6px; }
+.mat-pick-head { display: flex; align-items: center; gap: 4px; margin-bottom: 6px; }
+.mat-pick-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 4px; max-height: 240px; overflow: auto; }
+.mat-pick-list label { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: 8px; cursor: pointer; font-size: 14px; border: 1px solid transparent; }
+.mat-pick-list label:hover { background: var(--panel-2); }
+.mat-pick-list label.on { border-color: var(--primary); background: var(--primary-weak); }
+.mat-pick-list input { accent-color: var(--primary); }
+.mat-item { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-bottom: 8px; }
+.mat-item-top { display: flex; align-items: center; gap: 10px; }
+.mat-ico { width: 40px; height: 40px; border-radius: 8px; background: var(--panel-2); display: grid; place-items: center; font-size: 22px; flex: none; overflow: hidden; cursor: pointer; }
+.mat-ico img { width: 100%; height: 100%; object-fit: cover; }
+.mat-info { flex: 1; min-width: 0; cursor: pointer; }
+.mat-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mat-sub { font-size: 12px; color: var(--muted); }
+.mat-note { font-size: 13px; margin: 6px 0 0; padding: 6px 10px; background: var(--panel-2); border-radius: 8px; }
+.mat-seen { margin-top: 6px; font-size: 13px; }
+.mat-seen summary { cursor: pointer; color: var(--muted); }
+.mat-seen-list { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.mat-seen-list span { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--panel-2); color: var(--muted); }
+.mat-seen-list span.yes { background: var(--ok-weak); color: var(--ok); font-weight: 700; }
+@media (max-width: 760px) {
+  .modal.materials { height: 100dvh; }
+  .mat-body { grid-template-columns: 1fr; overflow: auto; }
+  .mat-send, .mat-sent { overflow: visible; }
+}
