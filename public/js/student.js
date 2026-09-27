@@ -93,6 +93,7 @@ function enterMain() {
   $('#fileInput').accept = ACCEPT;
   $('#limitInfo').textContent = `파일당 최대 ${me.maxFileMB}MB`;
   renderHeader();
+  renderMaterials();
   renderDone();
   bindUpload();
   connectSocket();
@@ -135,6 +136,19 @@ function connectSocket() {
   socket.on('site:update', ({ siteTitle }) => { me.siteTitle = siteTitle; renderHeader(); });
   socket.on('student:update', (s) => { me.student = s; renderHeader(); renderDone(); toast('선생님이 제출 파일을 정리했습니다.'); });
   socket.on('kicked', kicked);
+  socket.on('material:new', (m) => {
+    const i = me.materials.findIndex((x) => x.id === m.id);
+    if (i >= 0) me.materials[i] = m;
+    else {
+      me.materials.unshift(m);
+      toast(`📥 선생님이 자료를 보냈습니다: ${m.name}`, 'ok', 4000);
+    }
+    renderMaterials();
+  });
+  socket.on('material:remove', ({ id }) => {
+    me.materials = me.materials.filter((m) => m.id !== id);
+    renderMaterials();
+  });
 }
 
 function kicked() {
@@ -324,3 +338,31 @@ function closePreview() {
 $('#pvClose').addEventListener('click', closePreview);
 $('#pvModal').addEventListener('click', (e) => { if (e.target.id === 'pvModal') closePreview(); });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closePreview(); });
+
+// ------------------------------------------------------------ 선생님 자료
+const CONVERTIBLE = new Set(['doc', 'docx', 'ppt', 'pptx', 'pps', 'ppsx', 'xls', 'xlsx', 'hwp']);
+const matUrl = (m, opt = '') => `/materials/${m.id}?t=${encodeURIComponent(token)}${opt}`;
+function renderMaterials() {
+  me.materials ||= [];
+  const list = [...me.materials].sort((a, b) => b.createdAt - a.createdAt);
+  $('#matSection').classList.toggle('hidden', !list.length);
+  const newN = list.filter((m) => !m.seenAt).length;
+  $('#matNewCount').classList.toggle('hidden', !newN);
+  $('#matNewCount').textContent = `NEW ${newN}`;
+  $('#matList').replaceChildren(...list.map((m) => {
+    const open = () => openPreview({
+      name: m.name, ext: m.ext, size: m.size, url: matUrl(m), download: matUrl(m, '&download=1'),
+      pdfUrl: me.canConvert && CONVERTIBLE.has(m.ext) ? `/materials/${m.id}/pdf?t=${encodeURIComponent(token)}` : null,
+    });
+    // 썸네일은 확인(열람)으로 치지 않도록 nt=1
+    const thumb = kindOf(m.ext) === 'image' && m.ext !== 'heic' ? h('img', { src: matUrl(m, '&nt=1'), alt: '' }) : h('span', { class: 'ficon' }, iconOf(m.ext));
+    return h('div', { class: `done-item ${m.seenAt ? '' : 'is-new'}` },
+      h('div', { class: 'dthumb', onclick: open }, thumb),
+      h('div', { class: 'dinfo', onclick: open },
+        h('div', { class: 'dname', title: m.name }, m.seenAt ? null : h('span', { class: 'new-pill' }, 'NEW'), m.name),
+        m.note ? h('div', { class: 'dnote' }, m.note) : null,
+        h('div', { class: 'dsub' }, `${formatBytes(m.size)} · ${timeAgo(m.createdAt)}`)),
+      h('div', { class: 'dact' },
+        h('a', { class: 'icon-btn', href: matUrl(m, '&download=1'), title: '다운로드' }, '⬇️')));
+  }));
+}

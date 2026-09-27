@@ -27,6 +27,7 @@ const PORT = Number(process.env.PORT) || 3000;
 const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, 'data'));
 const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
+const MATERIAL_DIR = path.join(DATA_DIR, 'materials'); // 교사가 학생에게 보낸 자료
 const MAX_FILE_MB = Number(process.env.MAX_FILE_MB) || 300;
 const MAX_FILES_PER_UPLOAD = 20;
 const MAX_STUDENTS = 50;
@@ -73,6 +74,7 @@ function loadState() {
     const s = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
     s.courses ||= {};
     s.students ||= {};
+    s.materials ||= {};
     return s;
   } catch {
     return {
@@ -80,6 +82,7 @@ function loadState() {
       passwordHash: null,
       courses: {},
       students: {},
+      materials: {},
     };
   }
 }
@@ -356,6 +359,8 @@ app.get('/api/student/me', requireStudent, (req, res) => {
     student: publicStudent(req.student),
     maxFileMB: MAX_FILE_MB,
     allowedExt: [...ALLOWED_EXT],
+    canConvert,
+    materials: materialsFor(req.student).map((m) => studentMaterial(m, req.student.id)),
   });
 });
 
@@ -573,6 +578,7 @@ app.get('/api/master/state', requireMaster, (req, res) => {
     siteTitle: state.siteTitle,
     courses: Object.values(state.courses).sort((a, b) => a.createdAt - b.createdAt).map(publicCourse),
     students: Object.values(state.students).map(publicStudent),
+    materials: Object.values(state.materials).map(publicMaterial),
     publicUrl,
     publicUrlSource,
     lanUrls: lanUrls(),
@@ -686,6 +692,12 @@ app.post('/api/master/courses/:id/clear', requireMaster, async (req, res) => {
   if (!c) return;
   for (const s of studentsOf(c.id)) await removeStudent(s);
   await fsp.rm(path.join(UPLOAD_DIR, c.id), { recursive: true, force: true });
+  // 보낸 자료는 과목 콘텐츠이므로 유지하고, 학생별 확인 기록과 개별 대상만 초기화
+  for (const m of materialsOfCourse(c.id)) {
+    m.seen = {};
+    if (Array.isArray(m.target)) m.target = [];
+    toMasters('material:update', publicMaterial(m));
+  }
   saveState();
   res.json({ ok: true });
 });
@@ -695,6 +707,8 @@ app.delete('/api/master/courses/:id', requireMaster, async (req, res) => {
   if (!c) return;
   for (const s of studentsOf(c.id)) await removeStudent(s);
   await fsp.rm(path.join(UPLOAD_DIR, c.id), { recursive: true, force: true });
+  for (const m of materialsOfCourse(c.id)) delete state.materials[m.id];
+  await fsp.rm(path.join(MATERIAL_DIR, c.id), { recursive: true, force: true });
   delete state.courses[c.id];
   saveState();
   toMasters('course:remove', { id: c.id });
@@ -726,6 +740,150 @@ app.delete('/api/master/students/:id/files/:fileId', requireMaster, async (req, 
   pushStudent(s);
   toStudent(s.id, 'student:update', publicStudent(s));
   res.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// 교사 → 학생 자료 보내기
+//   target: 'all'(과목 전체, 나중에 입장한 학생 포함) 또는 학생 id 배열
+//   seen:   { studentId: 처음 연 시각 } — 교사 화면의 '확인' 표시
+// ---------------------------------------------------------------------------
+const materialsOfCourse = (courseId) => Object.values(state.materials).filter((m) => m.courseId === courseId);
+const canSeeMaterial = (m, s) => m.courseId === s.courseId && (m.target === 'all' || m.target.includes(s.id));
+const materialsFor = (s) => Object.values(state.materials).filter((m) => canSeeMaterial(m, s)).sort((a, b) => b.createdAt - a.createdAt);
+
+function publicMaterial(m) {
+  return {
+    id: m.id, courseId: m.courseId, name: m.name, ext: m.ext, size: m.size, mime: m.mime,
+    note: m.note, target: m.target, createdAt: m.createdAt, seen: m.seen,
+  };
+}
+function studentMaterial(m, studentId) {
+  return {
+    id: m.id, name: m.name, ext: m.ext, size: m.size, mime: m.mime, note: m.note,
+    createdAt: m.createdAt, seenAt: m.seen[studentId] || null,
+  };
+}
+// 대상 학생들에게만 실시간 알림 (전체 대상이면 과목 방 전체)
+function notifyMaterialTargets(m, event, payloadFor) {
+  if (m.target === 'all') {
+    for (const s of studentsOf(m.courseId)) toStudent(s.id, event, payloadFor(s));
+  } else {
+    for (const id of m.target) if (state.students[id]) toStudent(id, event, payloadFor(state.students[id]));
+  }
+}
+
+const materialUpload = multer({
+  storage: multer.diskStorage({
+    destination(req, file, cb) {
+      const dir = path.join(MATERIAL_DIR, req.course.id);
+      fs.mkdir(dir, { recursive: true }, (err) => cb(err, dir));
+    },
+    filename(req, file, cb) {
+      const original = Buffer.from(file.originalname, 'latin1').toString('utf8');
+      file.originalname = original.normalize('NFC');
+      file.fileId = newId();
+      const ext = extOf(original);
+      cb(null, `${file.fileId}${ext ? '.' + ext : ''}`);
+    },
+  }),
+  limits: { fileSize: MAX_FILE_MB * 1024 * 1024, files: MAX_FILES_PER_UPLOAD },
+  fileFilter(req, file, cb) {
+    const ext = extOf(Buffer.from(file.originalname, 'latin1').toString('utf8'));
+    if (!ALLOWED_EXT.has(ext)) return cb(Object.assign(new Error(`지원하지 않는 파일 형식입니다: .${ext || '?'}`), { status: 415 }));
+    cb(null, true);
+  },
+});
+
+app.post('/api/master/courses/:id/materials', requireMaster, (req, res) => {
+  const c = getCourse(req, res);
+  if (!c) return;
+  req.course = c;
+  materialUpload.array('files', MAX_FILES_PER_UPLOAD)(req, res, (err) => {
+    const cleanup = () => { for (const f of req.files || []) fs.rm(f.path, { force: true }, () => {}); };
+    if (err) {
+      cleanup();
+      const msg = err.code === 'LIMIT_FILE_SIZE' ? `파일 용량은 ${MAX_FILE_MB}MB 이하만 가능합니다.`
+        : err.code === 'LIMIT_FILE_COUNT' ? `한 번에 ${MAX_FILES_PER_UPLOAD}개까지 보낼 수 있습니다.`
+          : err.message;
+      return res.status(err.status || 400).json({ error: msg });
+    }
+    if (!req.files?.length) return res.status(400).json({ error: '보낼 파일을 선택해 주세요.' });
+    let target = 'all';
+    if (req.body.target && req.body.target !== 'all') {
+      let ids;
+      try { ids = JSON.parse(req.body.target); } catch { ids = null; }
+      ids = Array.isArray(ids) ? [...new Set(ids.map(String))].filter((id) => state.students[id]?.courseId === c.id) : [];
+      if (!ids.length) { cleanup(); return res.status(400).json({ error: '받을 학생을 선택해 주세요.' }); }
+      target = ids;
+    }
+    const note = cleanText(req.body.note, 300);
+    const created = [];
+    for (const f of req.files) {
+      const m = {
+        id: f.fileId, courseId: c.id, name: f.originalname, ext: extOf(f.originalname), size: f.size,
+        mime: f.mimetype, stored: path.relative(DATA_DIR, f.path), note, target,
+        createdAt: Date.now(), seen: {},
+      };
+      state.materials[m.id] = m;
+      created.push(m);
+      toMasters('material:update', publicMaterial(m));
+      notifyMaterialTargets(m, 'material:new', (st) => studentMaterial(m, st.id));
+    }
+    saveState();
+    res.json({ materials: created.map(publicMaterial) });
+    if (canConvert) {
+      for (const m of created) if (CONVERTIBLE_EXT.has(m.ext)) convertToPdf(path.join(DATA_DIR, m.stored)).catch(() => {});
+    }
+  });
+});
+
+app.delete('/api/master/materials/:id', requireMaster, async (req, res) => {
+  const m = state.materials[req.params.id];
+  if (!m) return res.status(404).json({ error: '자료를 찾을 수 없습니다.' });
+  delete state.materials[m.id];
+  const abs = path.join(DATA_DIR, m.stored);
+  await fsp.rm(abs, { force: true });
+  await fsp.rm(abs + '.pdf', { force: true });
+  saveState();
+  toMasters('material:remove', { id: m.id });
+  notifyMaterialTargets(m, 'material:remove', () => ({ id: m.id }));
+  res.json({ ok: true });
+});
+
+// 자료 파일: 교사 또는 대상 학생만. 학생이 처음 열면 확인 시각 기록 (nt=1 은 썸네일용, 기록 안 함)
+function resolveMaterialAccess(req) {
+  const m = state.materials[req.params.id];
+  if (!m) return null;
+  const t = req.query.t || '';
+  if (masterTokens.has(t)) return { m };
+  const s = Object.values(state.students).find((x) => x.token === t);
+  if (!s || !canSeeMaterial(m, s)) return null;
+  if (!req.query.nt && !m.seen[s.id]) {
+    m.seen[s.id] = Date.now();
+    saveState();
+    toMasters('material:update', publicMaterial(m));
+    toStudent(s.id, 'material:new', studentMaterial(m, s.id));
+  }
+  return { m };
+}
+
+app.get('/materials/:id', (req, res) => {
+  const a = resolveMaterialAccess(req);
+  if (!a) return res.status(404).send('자료를 찾을 수 없습니다.');
+  const abs = path.join(DATA_DIR, a.m.stored);
+  if (req.query.download) return res.download(abs, a.m.name);
+  res.sendFile(abs, { headers: { 'Content-Type': a.m.mime || 'application/octet-stream' } });
+});
+
+app.get('/materials/:id/pdf', async (req, res) => {
+  const a = resolveMaterialAccess(req);
+  if (!a) return res.status(404).send('자료를 찾을 수 없습니다.');
+  if (!canConvert || !CONVERTIBLE_EXT.has(a.m.ext)) return res.status(415).send('PDF 변환을 지원하지 않습니다.');
+  try {
+    res.type('pdf').sendFile(await convertToPdf(path.join(DATA_DIR, a.m.stored)));
+  } catch {
+    res.status(500).send('PDF 변환에 실패했습니다.');
+  }
 });
 
 // ---------------------------------------------------------------------------

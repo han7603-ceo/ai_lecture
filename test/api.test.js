@@ -120,6 +120,57 @@ test('수업 시작/종료: 새 코드 발급, 입장·제출 열고 닫기', as
   assert.equal((await call('GET', '/api/student/me', { student: a.data.token })).status, 200);
 });
 
+test('자료 보내기: 전체/선택 대상, 권한, 확인 기록, 회수', async () => {
+  const { data: { token } } = await call('POST', '/api/master/login', { body: { password: 'test-pw' } });
+  const { data: { course } } = await call('POST', '/api/master/courses', { token, body: { name: '자료반', maxStudents: 5 } });
+  const a = (await call('POST', '/api/join', { body: { code: course.code, name: '가' } })).data;
+  const b = (await call('POST', '/api/join', { body: { code: course.code, name: '나' } })).data;
+
+  const send = (target, name, text) => {
+    const form = new FormData();
+    form.append('files', new Blob([text]), name);
+    form.append('note', '실습 예제');
+    form.append('target', target);
+    return call('POST', `/api/master/courses/${course.id}/materials`, { token, body: form });
+  };
+  const all = await send('all', '전체자료.txt', 'ALL');
+  assert.equal(all.status, 200);
+  const only = await send(JSON.stringify([b.studentId]), '개별자료.txt', 'ONLY');
+  assert.equal(only.status, 200);
+  assert.deepEqual(only.data.materials[0].target, [b.studentId]);
+  assert.equal((await send(JSON.stringify(['없는학생']), 'x.txt', 'x')).status, 400, '대상 없음');
+
+  const meA = (await call('GET', '/api/student/me', { student: a.token })).data;
+  const meB = (await call('GET', '/api/student/me', { student: b.token })).data;
+  assert.deepEqual(meA.materials.map((m) => m.name), ['전체자료.txt']);
+  assert.deepEqual(meB.materials.map((m) => m.name).sort(), ['개별자료.txt', '전체자료.txt']);
+
+  // 나중에 입장한 학생도 전체 자료를 받음
+  const c = (await call('POST', '/api/join', { body: { code: course.code, name: '다' } })).data;
+  assert.deepEqual((await call('GET', '/api/student/me', { student: c.token })).data.materials.map((m) => m.name), ['전체자료.txt']);
+
+  // 대상이 아닌 학생은 파일 접근 불가
+  const onlyId = only.data.materials[0].id;
+  assert.equal((await call('GET', `/materials/${onlyId}?t=${a.token}`)).status, 404);
+  // 썸네일(nt=1) 요청은 확인으로 치지 않음, 실제 열람은 기록
+  assert.equal((await call('GET', `/materials/${onlyId}?t=${b.token}&nt=1`)).data.toString(), 'ONLY');
+  let st = (await call('GET', '/api/master/state', { token })).data.materials.find((m) => m.id === onlyId);
+  assert.equal(Object.keys(st.seen).length, 0);
+  await call('GET', `/materials/${onlyId}?t=${b.token}&download=1`);
+  st = (await call('GET', '/api/master/state', { token })).data.materials.find((m) => m.id === onlyId);
+  assert.ok(st.seen[b.studentId]);
+  assert.ok((await call('GET', '/api/student/me', { student: b.token })).data.materials.find((m) => m.id === onlyId).seenAt);
+
+  // 수업 종료 후에도 자료는 볼 수 있음
+  await call('POST', `/api/master/courses/${course.id}/end`, { token });
+  assert.equal((await call('GET', `/materials/${all.data.materials[0].id}?t=${a.token}`)).status, 200);
+
+  // 회수
+  assert.equal((await call('DELETE', `/api/master/materials/${onlyId}`, { token })).status, 200);
+  assert.equal((await call('GET', `/materials/${onlyId}?t=${b.token}`)).status, 404);
+  assert.equal((await call('GET', '/api/student/me', { student: b.token })).data.materials.length, 1);
+});
+
 // 로그인 차단 테스트는 이 IP 를 15분간 막으므로 항상 마지막에 둔다
 test('로그인 실패가 반복되면 차단', async () => {
   let last;
