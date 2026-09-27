@@ -94,13 +94,21 @@ if (process.env.MASTER_PASSWORD) {
 }
 
 let saveTimer = null;
+function writeState() {
+  const tmp = STATE_FILE + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
+  fs.renameSync(tmp, STATE_FILE);
+}
 function saveState() {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    const tmp = STATE_FILE + '.tmp';
-    fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
-    fs.renameSync(tmp, STATE_FILE);
-  }, 200);
+  saveTimer = setTimeout(() => { saveTimer = null; writeState(); }, 200);
+}
+// 종료 직전에 아직 저장되지 않은 변경을 즉시 기록
+function flushState() {
+  if (!saveTimer) return;
+  clearTimeout(saveTimer);
+  saveTimer = null;
+  writeState();
 }
 
 // ---------------------------------------------------------------------------
@@ -800,6 +808,21 @@ server.on('error', (err) => {
   }
   throw err;
 });
+
+// 정상 종료: 재배포·재시작 시 Railway 등이 보내는 SIGTERM 을 받으면
+// 저장을 마치고 접속을 정리한 뒤 오류 없이(exit 0) 종료
+let shuttingDown = false;
+function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`\n  ■ ${signal} 수신 — 저장 후 서버를 종료합니다.`);
+  try { flushState(); } catch (e) { console.error('상태 저장 실패:', e); }
+  io.close();
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 3000).unref();
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
 let markReady;
 const ready = new Promise((resolve) => { markReady = resolve; });
