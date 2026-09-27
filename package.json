@@ -1,0 +1,35 @@
+{
+  "name": "lecture-assignment-board",
+  "version": "1.0.0",
+  "description": "실시간 과제 제출 보드 (학생 업로드 · 교사 대시보드)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node --test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/han7603-ceo/ai_lecture.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/han7603-ceo/ai_lecture/issues"
+  },
+  "homepage": "https://github.com/han7603-ceo/ai_lecture#readme",
+  "dependencies": {
+    "archiver": "^7.0.1",
+    "docx-preview": "^0.4.1",
+    "express": "^5.2.1",
+    "jszip": "^3.10.2",
+    "multer": "^2.4.0",
+    "pdfjs-dist": "^4.10.38",
+    "qrcode": "^1.5.4",
+    "socket.io": "^4.8.4"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "private": true
+}

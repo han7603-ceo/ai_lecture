@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>교사 대시보드</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/student.css">
+  <link rel="stylesheet" href="/css/master.css">
+  <script src="/vendor/jszip.min.js" defer></script>
+  <script src="/vendor/docx-preview.min.js" defer></script>
+</head>
+<body>
+  <!-- 로그인 -->
+  <main class="center-page hidden" id="loginView">
+    <form class="card auth-card" id="loginForm">
+      <div class="brand-mark">🧑‍🏫</div>
+      <h1>교사(마스터) 로그인</h1>
+      <p class="sub" id="loginSite">대시보드에 접속하려면 비밀번호를 입력하세요.</p>
+      <label class="field">
+        <span>비밀번호</span>
+        <input class="input" type="password" id="pw" autocomplete="current-password" required>
+      </label>
+      <div class="error-text" id="loginErr"></div>
+      <button class="btn primary lg block">로그인</button>
+      <div class="home-links"><a href="/">← 학생 입장 화면</a></div>
+    </form>
+  </main>
+
+  <!-- 대시보드 -->
+  <div class="hidden" id="dashView">
+    <header class="topbar">
+      <h1 class="title editable" id="siteTitleBtn" title="홈페이지 이름 변경"><span id="siteTitle"></span><small>✏️</small></h1>
+      <div class="course-picker">
+        <select class="input" id="courseSelect" aria-label="과목 선택"></select>
+        <button class="btn" id="addCourseBtn" title="과목 추가">＋ 과목</button>
+      </div>
+      <div class="spacer"></div>
+      <div class="top-actions">
+        <button class="btn primary" id="joinInfoBtn">📱 입장 안내 (QR)</button>
+        <button class="btn" id="zipAllBtn">🗜️ 전체 ZIP</button>
+        <button class="btn" id="settingsBtn">⚙️ 설정</button>
+        <button class="btn ghost" id="logoutBtn" title="로그아웃">⎋</button>
+      </div>
+    </header>
+
+    <div class="notice-bar hidden" id="pwNotice">
+      ⚠️ 기본 비밀번호(admin1234)를 사용 중입니다. <button class="btn sm" id="pwNoticeBtn">비밀번호 변경</button>
+    </div>
+
+    <section class="course-bar hidden" id="courseBar">
+      <div class="course-head">
+        <h2 class="editable" id="courseNameBtn" title="과목명 변경"><span id="courseName"></span><small>✏️</small></h2>
+        <button class="code-chip" id="codeChip" title="입장 안내 크게 보기">입장 코드 <b id="courseCode"></b></button>
+        <span class="badge danger hidden" id="closedBadge">제출 마감</span>
+      </div>
+      <div class="stats" id="stats"></div>
+      <div class="tools">
+        <input class="input search" id="search" type="search" placeholder="🔍 학생 이름 · 자리번호 · 파일명 검색">
+        <div class="seg" id="filterSeg">
+          <button data-f="all" class="active">전체</button>
+          <button data-f="online">접속중</button>
+          <button data-f="done">제출</button>
+          <button data-f="none">미제출</button>
+        </div>
+        <label class="switch-row inline"><input type="checkbox" id="hideEmpty"> 빈 자리 숨기기</label>
+      </div>
+    </section>
+
+    <main class="seat-area" id="seatArea">
+      <div class="seat-grid" id="seatGrid"></div>
+      <div class="empty-state hidden" id="noCourse">
+        <div style="font-size:48px">📚</div>
+        <h2>과목을 먼저 만들어 주세요</h2>
+        <p class="muted">과목별로 입장 코드와 QR 이 따로 만들어집니다.</p>
+        <button class="btn primary lg" id="firstCourseBtn">＋ 첫 과목 만들기</button>
+      </div>
+      <p class="muted center hidden" id="noMatch">검색 조건에 맞는 학생이 없습니다.</p>
+    </main>
+  </div>
+
+  <!-- 학생 크게 보기 -->
+  <div class="modal-bg hidden" id="detailModal">
+    <div class="modal detail">
+      <div class="modal-head">
+        <span class="seat-no" id="dSeat"></span>
+        <span class="dot" id="dDot"></span>
+        <strong id="dName"></strong>
+        <span class="muted small" id="dSub"></span>
+        <div class="spacer"></div>
+        <button class="icon-btn" id="dPrev" title="이전 학생 (←)">◀</button>
+        <button class="icon-btn" id="dNext" title="다음 학생 (→)">▶</button>
+        <button class="icon-btn" id="dClose" aria-label="닫기">✕</button>
+      </div>
+      <div class="detail-body">
+        <aside class="detail-files">
+          <div class="detail-actions">
+            <a class="btn sm primary" id="dZip">🗜️ 이 학생 ZIP</a>
+            <button class="btn sm" id="dKick">🚪 학생 삭제</button>
+          </div>
+          <div id="dFiles"></div>
+        </aside>
+        <section class="detail-preview">
+          <div class="dp-head">
+            <strong id="dpName"></strong>
+            <div class="spacer"></div>
+            <a class="btn sm hidden" id="dpDownload">⬇️ 다운로드</a>
+            <a class="btn sm hidden" id="dpOpen" target="_blank" rel="noopener">↗ 새 창</a>
+          </div>
+          <div id="dpBox" class="preview"></div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <!-- 입장 안내 (프로젝터용) -->
+  <div class="modal-bg hidden" id="joinModal">
+    <div class="modal join">
+      <button class="icon-btn join-close" id="joinClose" aria-label="닫기">✕</button>
+      <p class="muted" id="jSite"></p>
+      <h2 id="jCourse"></h2>
+      <div class="join-body">
+        <img id="jQr" alt="입장 QR 코드">
+        <div class="join-text">
+          <p class="muted">① 휴대폰 카메라로 QR 을 찍거나</p>
+          <p class="muted">② 아래 주소에 접속해 입장 코드를 입력하세요</p>
+          <div class="join-url" id="jUrl"></div>
+          <div class="join-code" id="jCode"></div>
+          <p class="muted small" id="jHint"></p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 설정 -->
+  <div class="modal-bg hidden" id="settingsModal">
+    <div class="modal settings">
+      <div class="modal-head"><strong>설정</strong><div class="spacer"></div><button class="icon-btn" data-close aria-label="닫기">✕</button></div>
+      <div class="modal-body">
+        <div id="sCourseSec">
+        <h3>현재 과목</h3>
+        <label class="field"><span>과목명</span><input class="input" id="sName" maxlength="60"></label>
+        <label class="field"><span>정원 (최대 50명) — <b id="sMaxVal"></b>명</span>
+          <input type="range" id="sMax" min="1" max="50" step="1" class="range">
+        </label>
+        <label class="switch-row"><input type="checkbox" id="sOpen"> 입장·제출 허용 (끄면 제출 마감)</label>
+        <div class="row-actions">
+          <button class="btn primary" id="sSave">과목 설정 저장</button>
+          <button class="btn" id="sRegen">입장 코드 새로 만들기</button>
+        </div>
+        <div class="row-actions">
+          <button class="btn" id="sClear">🧹 과목 초기화 (학생·파일 전체 삭제)</button>
+          <button class="btn danger" id="sDelete">과목 삭제</button>
+        </div>
+        <hr>
+        </div>
+
+        <h3>홈페이지</h3>
+        <label class="field"><span>홈페이지 이름</span><input class="input" id="sSite" maxlength="60"></label>
+        <label class="field"><span>QR 코드에 사용할 접속 주소</span><select class="input" id="sBase"></select></label>
+        <p class="muted small" style="margin-top:-8px">학생 기기에서 접속 가능한 주소여야 합니다. (같은 Wi-Fi 의 내부 IP 또는 배포 주소)</p>
+        <div class="row-actions"><button class="btn primary" id="sSiteSave">홈페이지 설정 저장</button></div>
+
+        <hr>
+        <h3>보안</h3>
+        <div class="row-actions"><button class="btn" id="sPw">교사 비밀번호 변경</button></div>
+        <p class="muted small" id="sInfo"></p>
+      </div>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.min.js"></script>
+  <script type="module" src="/js/master.js"></script>
+</body>
+</html>

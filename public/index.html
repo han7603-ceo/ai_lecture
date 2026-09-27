@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>과제 제출 보드</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <main class="center-page">
+    <form class="card auth-card" id="codeForm" autocomplete="off">
+      <div class="brand-mark">📥</div>
+      <h1 id="siteTitle">과제 제출 보드</h1>
+      <p class="sub">선생님이 알려준 입장 코드를 입력하거나 QR 코드를 찍어 주세요.</p>
+      <label class="field">
+        <span>입장 코드</span>
+        <input class="input code" id="code" maxlength="6" inputmode="text" autocapitalize="characters" placeholder="ABC123" required>
+      </label>
+      <div class="error-text" id="err"></div>
+      <button class="btn primary lg block" type="submit">입장하기</button>
+      <div class="home-links"><a href="/master">교사(마스터) 로그인 →</a></div>
+    </form>
+  </main>
+  <script type="module">
+    import { $, api } from '/js/common.js';
+    api('/api/public/config').then((c) => {
+      $('#siteTitle').textContent = c.siteTitle;
+      document.title = c.siteTitle;
+    }).catch(() => {});
+    $('#code').addEventListener('input', (e) => { e.target.value = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''); });
+    $('#codeForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const code = $('#code').value.trim();
+      try {
+        await api('/api/join/check', { method: 'POST', body: { code } });
+        location.href = `/student?code=${encodeURIComponent(code)}`;
+      } catch (err) {
+        $('#err').textContent = err.message;
+      }
+    });
+  </script>
+</body>
+</html>

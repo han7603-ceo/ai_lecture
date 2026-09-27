@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>과제 제출</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/student.css">
+  <script src="/vendor/jszip.min.js" defer></script>
+  <script src="/vendor/docx-preview.min.js" defer></script>
+</head>
+<body>
+  <!-- 1) 이름 등록 -->
+  <main class="center-page hidden" id="joinView">
+    <form class="card auth-card" id="nameForm" autocomplete="off">
+      <div class="brand-mark">🙋</div>
+      <p class="muted" id="joinSite" style="margin:0 0 2px"></p>
+      <h1 id="joinCourse">과목</h1>
+      <p class="sub">과제 제출에 사용할 이름을 입력하세요.</p>
+      <label class="field hidden" id="codeField">
+        <span>입장 코드</span>
+        <input class="input code" id="codeInput" maxlength="6" autocapitalize="characters" placeholder="ABC123">
+      </label>
+      <label class="field">
+        <span>이름</span>
+        <input class="input" id="nameInput" maxlength="30" placeholder="예) 홍길동" required>
+      </label>
+      <div class="error-text" id="joinErr"></div>
+      <button class="btn primary lg block" type="submit" id="joinBtn">입장하기</button>
+      <div class="home-links"><a href="/">← 처음으로</a></div>
+    </form>
+  </main>
+
+  <!-- 2) 과제 제출 화면 -->
+  <div class="hidden" id="mainView">
+    <header class="topbar">
+      <div style="min-width:0">
+        <div class="sub" id="siteTitle"></div>
+        <h1 class="title"><span id="courseName"></span></h1>
+      </div>
+      <div class="spacer"></div>
+      <button class="me-chip" id="meChip" title="이름 변경">
+        <span class="dot" id="connDot"></span>
+        <span class="seat" id="mySeat"></span>
+        <strong id="myName"></strong>
+        <span class="muted">✏️</span>
+      </button>
+    </header>
+
+    <main class="student-main">
+      <div class="notice danger hidden" id="closedNotice">⛔ 제출이 마감되었습니다. 새 파일을 올릴 수 없습니다.</div>
+
+      <section class="card section">
+        <div class="section-head">
+          <h2>과제 올리기</h2>
+          <span class="muted small" id="limitInfo"></span>
+        </div>
+
+        <label class="dropzone" id="dropzone">
+          <input type="file" id="fileInput" multiple hidden>
+          <div class="dz-icon">⬆️</div>
+          <div class="dz-title">여기를 눌러 파일 선택</div>
+          <div class="dz-sub muted">또는 파일을 끌어다 놓으세요 · 이미지·영상·음향·문서(PDF, HWPX, DOC, PPT, XLS)</div>
+        </label>
+        <div class="capture-row">
+          <label class="btn"><input type="file" accept="image/*" capture="environment" hidden id="photoInput">📷 사진 촬영</label>
+          <label class="btn"><input type="file" accept="video/*" capture="environment" hidden id="videoInput">🎥 동영상 촬영</label>
+          <label class="btn"><input type="file" accept="audio/*" capture hidden id="audioInput">🎙️ 녹음</label>
+        </div>
+
+        <div id="pendingWrap" class="hidden">
+          <h3 class="sub-title">업로드 대기 중 <span class="badge warn" id="pendingCount">0</span></h3>
+          <p class="muted small" style="margin-top:-6px">카드를 눌러 미리보기로 확인한 뒤 <b>최종 업로드</b>를 눌러야 제출됩니다.</p>
+          <div class="file-grid" id="pendingList"></div>
+          <div class="progress hidden" id="progress"><div class="bar" id="progressBar"></div><span id="progressText"></span></div>
+          <div class="upload-actions">
+            <button class="btn ghost" id="clearPending">모두 취소</button>
+            <button class="btn primary lg" id="uploadBtn">최종 업로드</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="card section">
+        <div class="section-head">
+          <h2>제출한 과제 <span class="badge ok" id="doneCount">0</span></h2>
+        </div>
+        <div id="doneList" class="done-list"></div>
+        <p class="muted empty-text" id="doneEmpty">아직 제출한 파일이 없습니다.</p>
+      </section>
+
+      <p class="muted small center">⚠️ 뒤로가기 · 새로고침을 누르면 확인 창이 표시됩니다. 같은 기기로 다시 들어오면 자동으로 이어집니다.</p>
+    </main>
+  </div>
+
+  <!-- 미리보기 모달 -->
+  <div class="modal-bg hidden" id="pvModal">
+    <div class="modal">
+      <div class="modal-head">
+        <strong id="pvTitle"></strong>
+        <div class="spacer"></div>
+        <a class="btn sm hidden" id="pvDownload" download>다운로드</a>
+        <button class="icon-btn" id="pvClose" aria-label="닫기">✕</button>
+      </div>
+      <div class="modal-body"><div id="pvBox" class="preview"></div></div>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.min.js"></script>
+  <script type="module" src="/js/student.js"></script>
+</body>
+</html>
