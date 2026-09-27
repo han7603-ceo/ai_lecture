@@ -103,6 +103,12 @@ function connectSocket() {
     if (courseId === id) courseId = S.courses[0]?.id || null;
     renderAll();
   });
+  socket.on('config:update', ({ publicUrl, publicUrlSource }) => {
+    S.publicUrl = publicUrl;
+    S.publicUrlSource = publicUrlSource;
+    if (publicUrlSource === 'tunnel') toast('🌐 외부 접속 주소가 준비되었습니다. QR 코드에 자동 반영됩니다.', 'ok', 4000);
+    if (!$('#joinModal').classList.contains('hidden')) openJoin();
+  });
   socket.on('site:update', ({ siteTitle }) => { S.siteTitle = siteTitle; renderSiteTitle(); });
 }
 
@@ -409,6 +415,8 @@ $('#firstCourseBtn').addEventListener('click', addCourse);
 
 // ------------------------------------------------------------ 입장 안내(QR)
 function baseUrl() {
+  // 실행 파일이 만든 외부 접속(터널) 주소는 매번 바뀌므로 저장된 주소보다 우선
+  if (S.publicUrlSource === 'tunnel' && S.publicUrl) return S.publicUrl;
   const saved = store.get('lb_base');
   if (saved) return saved;
   if (S.publicUrl) return S.publicUrl;

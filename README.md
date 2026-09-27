@@ -33,28 +33,56 @@
 > 서버에 LibreOffice가 설치돼 있으면 DOCX/PPTX/XLSX/HWPX도 "원본 레이아웃(PDF)으로 보기" 버튼으로 정확한 모양을 볼 수 있습니다.
 > 서버는 시작할 때 실제 변환이 되는지 스스로 시험해 보고, 안 되면 이 기능을 자동으로 끕니다.
 
-## 실행 방법
+## 교사 PC에서 실행하기 (더블클릭)
 
-필요: [Node.js](https://nodejs.org/) 18.17 이상
+별도 서버 비용 없이 교사 PC를 서버로 사용합니다.
+
+### 처음 한 번만 준비
+
+1. [Node.js](https://nodejs.org/ko/download) **LTS 버전**을 설치합니다. (설치 안 돼 있으면 실행 파일이 설치 페이지를 열어 줍니다)
+2. GitHub 저장소에서 **Code → Download ZIP**으로 내려받아 원하는 폴더에 압축을 풉니다.
+
+### 수업할 때
+
+| 상황 | Windows | Mac |
+| --- | --- | --- |
+| 학생이 **교사 PC와 같은 Wi-Fi**에 접속 | `start-classroom.bat` 더블클릭 | `start-classroom.command` 더블클릭 |
+| 학생이 **LTE/다른 네트워크**로 접속, 또는 학교 Wi-Fi가 기기 간 통신을 막음 | `start-online.bat` 더블클릭 | `start-online.command` 더블클릭 |
+
+- 처음 실행할 때 필요한 프로그램을 자동으로 설치합니다(1~2분, 인터넷 필요).
+- 준비가 끝나면 교사 대시보드가 브라우저에 자동으로 열립니다. **📱 입장 안내 (QR)** 를 프로젝터에 띄우면 됩니다.
+- **검은 창을 닫으면 서버가 꺼집니다.** 수업 중에는 창을 열어 두고, PC 절전 모드를 꺼 두세요.
+- 제출된 파일은 이 폴더의 `data/`에 저장되어 다음 실행 때도 남아 있습니다.
+
+### 외부 접속 모드(`start-online`)는 어떻게 동작하나요?
+
+[Cloudflare Quick Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/)(무료, 가입 불필요)로 `https://○○○.trycloudflare.com` 주소를 만들어 교사 PC에 연결합니다.
+실행 파일이 [cloudflared](https://developers.cloudflare.com/tunnel/downloads/)를 처음 한 번 자동으로 내려받아 `bin/`에 저장하고, 생성된 주소를 **QR 코드에 자동 반영**합니다.
+
+- 주소는 **실행할 때마다 바뀝니다.** 수업마다 QR을 새로 띄워 주세요.
+- Cloudflare는 이 무료 터널을 테스트·개발 용도로 안내하며, 가동 시간 보장이 없고 동시 요청이 200개로 제한됩니다. 한 학급(50명 이하) 수업에는 대체로 충분하지만, 중요한 평가에는 같은 Wi-Fi 모드나 유료 서버를 권장합니다.
+- 학교·기관 방화벽이 Cloudflare 접속을 막으면 주소가 만들어지지 않습니다. 이때도 같은 Wi-Fi 모드로는 계속 쓸 수 있습니다.
+
+> Mac에서 "확인되지 않은 개발자" 경고가 뜨면 파일을 **우클릭 → 열기**로 실행하세요.
+> 실행 권한 오류가 나면 터미널에서 `chmod +x start-*.command` 를 한 번 실행하세요.
+
+## 터미널에서 실행 (개발자용)
 
 ```bash
 npm install
-npm start
+npm start            # 서버만 실행
+npm run classroom    # 같은 Wi-Fi 모드 (브라우저 자동 열기)
+npm run online       # 외부 접속 모드 (Cloudflare 터널)
 ```
 
 - 교사 대시보드: `http://localhost:3000/master` (기본 비밀번호 `admin1234` → 로그인 후 바로 변경하세요)
-- 학생 입장: 대시보드의 **📱 입장 안내 (QR)** 버튼을 프로젝터에 띄우면 됩니다.
-
-### 교실에서 쓰는 방법 (같은 Wi-Fi)
-
-교사 PC에서 서버를 켜면 콘솔에 `같은 Wi-Fi 접속: http://192.168.x.x:3000` 주소가 표시됩니다.
-대시보드를 `localhost`로 열어도 QR 코드에는 자동으로 이 내부 IP 주소가 들어갑니다.
-(학교 Wi-Fi가 기기 간 통신을 막는 경우 아래처럼 외부 서버에 배포하세요.)
+- 대시보드를 `localhost`로 열어도 QR 코드에는 자동으로 내부 IP 주소(또는 터널 주소)가 들어갑니다.
 
 ### 외부 서버 배포 (Railway, Render, VPS 등)
 
 일반적인 Node.js 앱으로 배포하면 됩니다. `npm start`로 실행되며 `PORT` 환경 변수를 따릅니다.
 업로드 파일을 보존하려면 `DATA_DIR`을 영구 볼륨 경로로 지정하세요.
+(Render 무료 플랜처럼 저장 공간이 유지되지 않는 곳에서는 서버가 잠들거나 재시작할 때 제출 파일이 사라집니다 — [Render 문서](https://render.com/docs/free))
 
 ### 환경 변수
 
@@ -66,6 +94,7 @@ npm start
 | `DATA_DIR` | `./data` | 상태 파일·업로드 파일 저장 위치 |
 | `MAX_FILE_MB` | `300` | 파일 1개 최대 용량(MB) |
 | `SOFFICE_PATH` | 자동 탐색 | LibreOffice `soffice` 실행 파일 경로 |
+| `CLOUDFLARED_PATH` | 자동 탐색/다운로드 | `cloudflared` 실행 파일 경로 (외부 접속 모드) |
 
 ## 데이터 보관
 

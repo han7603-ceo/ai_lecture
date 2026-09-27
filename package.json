@@ -6,7 +6,9 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node --test"
+    "test": "node --test",
+    "classroom": "node scripts/launch.js",
+    "online": "node scripts/launch.js --tunnel"
   },
   "repository": {
     "type": "git",
