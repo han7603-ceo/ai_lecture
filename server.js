@@ -31,7 +31,10 @@ const MAX_FILE_MB = Number(process.env.MAX_FILE_MB) || 300;
 const MAX_FILES_PER_UPLOAD = 20;
 const MAX_STUDENTS = 50;
 const DEFAULT_PASSWORD = 'admin1234';
-const PUBLIC_URL = (process.env.PUBLIC_URL || '').replace(/\/+$/, '');
+const ENV_PUBLIC_URL = (process.env.PUBLIC_URL || '').replace(/\/+$/, '');
+// 학생 접속 주소 (QR). 실행 중 터널 주소가 생기면 setPublicUrl 로 바뀜
+let publicUrl = ENV_PUBLIC_URL;
+let publicUrlSource = ENV_PUBLIC_URL ? 'env' : null;
 
 const ALLOWED_EXT = new Set([
   // 이미지
@@ -527,7 +530,8 @@ app.get('/api/master/state', requireMaster, (req, res) => {
     siteTitle: state.siteTitle,
     courses: Object.values(state.courses).sort((a, b) => a.createdAt - b.createdAt).map(publicCourse),
     students: Object.values(state.students).map(publicStudent),
-    publicUrl: PUBLIC_URL,
+    publicUrl,
+    publicUrlSource,
     lanUrls: lanUrls(),
     canConvert,
     usingDefaultPassword: !!state.usingDefaultPassword,
@@ -710,6 +714,25 @@ app.use((err, req, res, next) => {
   res.status(err.status || 500).json({ error: err.message || '서버 오류' });
 });
 
+/** 외부 접속 주소(예: Cloudflare 터널)를 실행 중에 변경하고 대시보드에 알림 */
+function setPublicUrl(url, source = 'tunnel') {
+  publicUrl = url ? String(url).replace(/\/+$/, '') : ENV_PUBLIC_URL;
+  publicUrlSource = url ? source : (ENV_PUBLIC_URL ? 'env' : null);
+  toMasters('config:update', { publicUrl, publicUrlSource });
+}
+
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`\n  ✖ ${PORT}번 포트를 이미 사용 중입니다. 과제 제출 보드가 이미 실행 중인지 확인하세요.`);
+    console.error('    (다른 포트로 실행하려면 PORT 환경 변수를 지정하세요)\n');
+    process.exit(1);
+  }
+  throw err;
+});
+
+let markReady;
+const ready = new Promise((resolve) => { markReady = resolve; });
+
 server.listen(PORT, () => {
   console.log(`\n  ▶ 실시간 과제 제출 보드 실행 중`);
   console.log(`    교사 대시보드 : http://localhost:${PORT}/master`);
@@ -717,6 +740,7 @@ server.listen(PORT, () => {
   if (state.usingDefaultPassword) console.log(`    ⚠ 기본 교사 비밀번호(${DEFAULT_PASSWORD}) 사용 중 — 로그인 후 변경하세요.`);
   if (sofficePath) selfTestConvert();
   else console.log('    PDF 변환(LibreOffice): 미설치 — 문서는 브라우저 간이 미리보기로 표시');
+  markReady();
 });
 
-module.exports = { app, server };
+module.exports = { app, server, ready, setPublicUrl, PORT };
