@@ -176,6 +176,7 @@ function publicCourse(c) {
   return {
     id: c.id, name: c.name, code: c.code, maxStudents: c.maxStudents,
     open: c.open !== false, createdAt: c.createdAt,
+    sessionStartedAt: c.sessionStartedAt || null, sessionEndedAt: c.sessionEndedAt || null,
   };
 }
 const studentsOf = (courseId) =>
@@ -633,6 +634,32 @@ app.post('/api/master/courses/:id/regen-code', requireMaster, (req, res) => {
   c.code = newJoinCode();
   saveState();
   toMasters('course:update', publicCourse(c));
+  res.json({ course: publicCourse(c) });
+});
+
+// 수업 시작: 새 입장 코드 발급 + 입장·제출 열기 (이미 입장한 학생은 그대로 유지)
+app.post('/api/master/courses/:id/start', requireMaster, (req, res) => {
+  const c = getCourse(req, res);
+  if (!c) return;
+  c.code = newJoinCode();
+  c.open = true;
+  c.sessionStartedAt = Date.now();
+  c.sessionEndedAt = null;
+  saveState();
+  toMasters('course:update', publicCourse(c));
+  toCourse(c.id, 'course:update', publicCourse(c));
+  res.json({ course: publicCourse(c) });
+});
+
+// 수업 종료: 입장·제출 마감 (코드를 알아도 새로 들어오거나 제출할 수 없음)
+app.post('/api/master/courses/:id/end', requireMaster, (req, res) => {
+  const c = getCourse(req, res);
+  if (!c) return;
+  c.open = false;
+  c.sessionEndedAt = Date.now();
+  saveState();
+  toMasters('course:update', publicCourse(c));
+  toCourse(c.id, 'course:update', publicCourse(c));
   res.json({ course: publicCourse(c) });
 });
 

@@ -101,6 +101,26 @@ test('입장 → 업로드 → 교사 조회 → ZIP 다운로드', async () => 
   assert.equal((await call('GET', '/api/student/me', { student: a.data.token })).status, 401);
 });
 
+test('수업 시작/종료: 새 코드 발급, 입장·제출 열고 닫기', async () => {
+  const { data: { token } } = await call('POST', '/api/master/login', { body: { password: 'test-pw' } });
+  const { data: { course } } = await call('POST', '/api/master/courses', { token, body: { name: '세션', maxStudents: 5 } });
+  const a = await call('POST', '/api/join', { body: { code: course.code, name: '학생A' } });
+
+  const ended = await call('POST', `/api/master/courses/${course.id}/end`, { token });
+  assert.equal(ended.data.course.open, false);
+  assert.equal((await call('POST', '/api/join', { body: { code: course.code, name: '학생B' } })).status, 403);
+
+  const started = await call('POST', `/api/master/courses/${course.id}/start`, { token });
+  assert.equal(started.data.course.open, true);
+  assert.notEqual(started.data.course.code, course.code, '새 코드 발급');
+  assert.ok(started.data.course.sessionStartedAt);
+  assert.equal((await call('POST', '/api/join', { body: { code: course.code, name: '학생B' } })).status, 404, '지난 코드는 무효');
+  assert.equal((await call('POST', '/api/join', { body: { code: started.data.course.code, name: '학생B' } })).status, 200);
+  // 이미 입장한 학생은 코드와 무관하게 유지
+  assert.equal((await call('GET', '/api/student/me', { student: a.data.token })).status, 200);
+});
+
+// 로그인 차단 테스트는 이 IP 를 15분간 막으므로 항상 마지막에 둔다
 test('로그인 실패가 반복되면 차단', async () => {
   let last;
   for (let i = 0; i < 11; i++) last = await call('POST', '/api/master/login', { body: { password: 'wrong' } });
