@@ -100,3 +100,11 @@ test('입장 → 업로드 → 교사 조회 → ZIP 다운로드', async () => 
   await call('POST', `/api/master/courses/${course.id}/clear`, { token });
   assert.equal((await call('GET', '/api/student/me', { student: a.data.token })).status, 401);
 });
+
+test('로그인 실패가 반복되면 차단', async () => {
+  let last;
+  for (let i = 0; i < 11; i++) last = await call('POST', '/api/master/login', { body: { password: 'wrong' } });
+  assert.equal(last.status, 429);
+  // 차단 중에는 올바른 비밀번호도 거부
+  assert.equal((await call('POST', '/api/master/login', { body: { password: 'test-pw' } })).status, 429);
+});

@@ -78,11 +78,17 @@ npm run online       # 외부 접속 모드 (Cloudflare 터널)
 - 교사 대시보드: `http://localhost:3000/master` (기본 비밀번호 `admin1234` → 로그인 후 바로 변경하세요)
 - 대시보드를 `localhost`로 열어도 QR 코드에는 자동으로 내부 IP 주소(또는 터널 주소)가 들어갑니다.
 
-### 외부 서버 배포 (Railway, Render, VPS 등)
+### 외부 서버 배포 (Railway 등)
 
 일반적인 Node.js 앱으로 배포하면 됩니다. `npm start`로 실행되며 `PORT` 환경 변수를 따릅니다.
-업로드 파일을 보존하려면 `DATA_DIR`을 영구 볼륨 경로로 지정하세요.
-(Render 무료 플랜처럼 저장 공간이 유지되지 않는 곳에서는 서버가 잠들거나 재시작할 때 제출 파일이 사라집니다 — [Render 문서](https://render.com/docs/free))
+
+**Railway 권장 설정**
+- GitHub 저장소를 연결해 서비스를 만들면 `main`에 push할 때마다 자동 배포됩니다.
+- **Volume**을 `/data`에 연결하고 환경 변수 `DATA_DIR=/data`를 지정해야 재배포 후에도 제출 파일이 남습니다.
+- `MASTER_PASSWORD`를 반드시 지정하세요. (환경 변수로 지정한 비밀번호가 대시보드에서 바꾼 비밀번호보다 우선합니다. 비밀번호를 바꿀 때는 Railway **Variables**에서 바꾸세요.)
+- **Settings → Networking → Generate Domain**으로 `*.up.railway.app` 주소를 만들면 그 주소가 곧 학생 접속 주소입니다.
+
+저장 공간이 유지되지 않는 곳(예: Render 무료 플랜)에서는 서버가 잠들거나 재시작할 때 제출 파일이 사라집니다 — [Render 문서](https://render.com/docs/free).
 
 ### 환경 변수
 
