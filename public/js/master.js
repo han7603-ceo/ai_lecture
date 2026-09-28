@@ -458,7 +458,7 @@ function renderDetail() {
         : iconOf(f.ext);
     list.append(h('div', {
       class: `dfile ${f.id === detailFileId ? 'active' : ''}`,
-      onclick: () => { detailFileId = f.id; renderDetail(); showFile(s, f); },
+      onclick: () => { detailFileId = f.id; renderDetail(); showFile(s, f, true); },
     },
     h('div', { class: 'dthumb' }, thumb),
     h('div', { class: 'dinfo' },
@@ -467,10 +467,13 @@ function renderDetail() {
     h('a', { class: 'icon-btn', href: fileUrl(f, true), title: '다운로드', onclick: (e) => e.stopPropagation() }, '⬇️'),
     h('button', { class: 'icon-btn', title: '파일 삭제', onclick: (e) => { e.stopPropagation(); deleteFile(s, f); } }, '🗑️')));
   }
+  updateDualBtn();
 }
 
-function showFile(s, f) {
+// fromClick: 교사가 파일을 직접 누름 → 듀얼 모니터면 보조 모니터 창을 (없으면 새로) 연다
+function showFile(s, f, fromClick = false) {
   const box = $('#dpBox');
+  const seq = ++showSeq;
   $('#dpDownload').classList.toggle('hidden', !f);
   $('#dpOpen').classList.toggle('hidden', !f);
   if (!f) {
@@ -483,11 +486,89 @@ function showFile(s, f) {
   $('#dpName').textContent = f.name;
   $('#dpDownload').href = fileUrl(f, true);
   $('#dpOpen').href = fileUrl(f);
-  renderPreview(box, {
+  const src = {
     name: f.name, ext: f.ext, size: f.size, url: fileUrl(f),
     pdfUrl: S.canConvert && CONVERTIBLE.has(f.ext) ? `/files/${f.id}/pdf?t=${encodeURIComponent(token)}` : null,
-  });
+  };
+  if (useViewer() && (fromClick || viewerOpen())) {
+    const payload = { student: `${s.seat}번 ${s.name}`, name: f.name, download: fileUrl(f, true), src };
+    box._token = null;
+    box.querySelectorAll('video, audio').forEach((m) => m.pause());
+    box.className = 'preview';
+    box.replaceChildren(h('div', { class: 'pv-empty' },
+      h('div', { class: 'pv-empty-icon' }, '🖥️'),
+      h('p', { class: 'muted' }, '다른 모니터의 창에 표시하고 있습니다.'),
+      h('button', { class: 'btn sm', onclick: () => renderPreview(box, src) }, '여기서 보기')));
+    // 창을 열지 못하면(권한 거부·팝업 차단) 이 창에 그대로 표시
+    showInViewer(payload).then((ok) => { if (!ok && seq === showSeq) renderPreview(box, src); });
+    return;
+  }
+  renderPreview(box, src);
 }
+
+// ------------------------------------------------------------ 듀얼 모니터: 제출 파일을 다른 모니터 창에
+// Window Management API (크롬·엣지 100+, https 또는 localhost): 모니터가 2대 이상일 때만 사용하고,
+// 모니터가 하나이거나 지원하지 않는 브라우저면 지금처럼 이 창 안에 표시한다.
+let showSeq = 0;
+let dualOn = store.get('lb_dual') !== '0';
+let viewerWin = null;
+let viewerPayload = null;
+let screenDetails = null;
+let dualWarned = false;
+const dualCapable = () => window.screen.isExtended === true && typeof window.getScreenDetails === 'function';
+const useViewer = () => dualOn && dualCapable();
+const viewerOpen = () => !!viewerWin && !viewerWin.closed;
+
+async function otherScreenFeatures() {
+  screenDetails ||= await window.getScreenDetails(); // 처음 한 번 브라우저가 '창 관리' 권한을 묻는다
+  const { screens, currentScreen } = screenDetails;
+  const other = screens.find((x) => x !== currentScreen);
+  if (!other) return null;
+  return `popup,left=${other.availLeft},top=${other.availTop},width=${other.availWidth},height=${other.availHeight}`;
+}
+async function showInViewer(payload) {
+  viewerPayload = payload;
+  if (viewerOpen()) {
+    viewerWin.postMessage({ type: 'show', payload }, location.origin);
+    return true;
+  }
+  let features;
+  try {
+    features = await otherScreenFeatures();
+  } catch {
+    screenDetails = null;
+    if (!dualWarned) toast('다른 모니터에 띄우려면 주소창 왼쪽 아이콘 → "창 관리"를 허용해 주세요. 지금은 이 창에 표시합니다.', 'error', 6000);
+    dualWarned = true;
+    return false;
+  }
+  if (!features) return false;
+  viewerWin = window.open('/viewer', 'lb-viewer', features);
+  if (!viewerWin) {
+    toast('팝업이 차단되었습니다. 파일을 한 번 더 누르거나, 주소창에서 이 사이트의 팝업을 허용해 주세요.', 'error', 6000);
+    return false;
+  }
+  return true; // 창이 준비되면 'viewer-ready' 를 보내오고, 그때 파일을 전달
+}
+window.addEventListener('message', (e) => {
+  if (e.origin !== location.origin || e.source !== viewerWin) return;
+  if (e.data?.type === 'viewer-ready' && viewerPayload) viewerWin.postMessage({ type: 'show', payload: viewerPayload }, location.origin);
+});
+
+function updateDualBtn() {
+  const b = $('#dpDual');
+  b.classList.toggle('hidden', !dualCapable() || !detailFileId);
+  b.classList.toggle('primary', dualOn);
+  b.textContent = dualOn ? '🖥️ 다른 모니터: 켜짐' : '🖥️ 다른 모니터: 꺼짐';
+}
+$('#dpDual').addEventListener('click', () => {
+  dualOn = !dualOn;
+  store.set('lb_dual', dualOn ? null : '0');
+  updateDualBtn();
+  const s = students.get(detailId);
+  const f = s?.files.find((x) => x.id === detailFileId);
+  if (s && f) showFile(s, f, dualOn);
+});
+window.screen.addEventListener?.('change', updateDualBtn);
 
 async function deleteFile(s, f) {
   if (!(await confirmDialog(`${s.name} 학생의 '${f.name}' 파일을 삭제할까요?`, { ok: '삭제', danger: true }))) return;

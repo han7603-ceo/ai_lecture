@@ -1,0 +1,6 @@
+html, body { height: 100%; }
+body { display: flex; flex-direction: column; margin: 0; background: var(--bg); }
+.v-head { display: flex; align-items: center; gap: 10px; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); flex: none; }
+.v-student { background: var(--primary); color: #fff; border-radius: 999px; padding: 2px 12px; font-weight: 800; font-size: 14px; white-space: nowrap; }
+.v-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 16px; }
+.v-body { flex: 1; min-height: 0; overflow: auto; padding: 16px 20px; }
