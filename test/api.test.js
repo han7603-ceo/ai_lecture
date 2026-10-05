@@ -268,6 +268,58 @@ test('학생 링크 제출: 주소 검사, 교사 조회, 이동, ZIP·CSV, 삭�
   assert.equal((await submit({ url: 'https://example.com' })).status, 403);
 });
 
+test('인증 메일 연결: 키 검사, 코드 추출, 학생 매칭, 등록 제한', async () => {
+  const { data: { token } } = await call('POST', '/api/master/login', { body: { password: 'test-pw' } });
+  const { data: { course } } = await call('POST', '/api/master/courses', { token, body: { name: '메일반', maxStudents: 5 } });
+  const a = (await call('POST', '/api/join', { body: { code: course.code, name: '가' } })).data;
+  const b = (await call('POST', '/api/join', { body: { code: course.code, name: '나' } })).data;
+  const st = (await call('GET', '/api/master/state', { token })).data;
+  assert.match(st.inboxKey, /^[0-9a-f]{32}$/);
+  const post = (body, key = st.inboxKey) => fetch(`${BASE}/api/inbox`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'x-inbox-key': key }, body: JSON.stringify(body),
+  });
+  const mail = (id, to, code) => ({
+    id, to: `"학생" <${to}>`, from: 'OpenAI <noreply@tm.openai.com>', subject: `Your ChatGPT code is ${code}`,
+    text: `Enter this code: ${code}\nhttps://auth.openai.com/verify?token=abc\nhttps://openai.com/privacy`,
+  });
+  assert.equal((await post(mail('m0', 'x@y.com', '000000'), 'wrong')).status, 401);
+
+  // 학생 화면 칸 켜기 + 가입 메일 등록 (학생은 한 번만, 중복 불가)
+  await call('PATCH', '/api/master/inbox', { token, body: { enabled: true } });
+  assert.equal((await call('PATCH', '/api/student/mail', { student: a.token, body: { mailAlias: 'Han7603+S01@gmail.com' } })).status, 200);
+  assert.equal((await call('PATCH', '/api/student/mail', { student: a.token, body: { mailAlias: 'han7603+s02@gmail.com' } })).status, 409, '두 번째 변경 불가');
+  assert.equal((await call('PATCH', '/api/student/mail', { student: b.token, body: { mailAlias: 'han7603+s01@gmail.com' } })).status, 409, '남의 주소 불가');
+  assert.equal((await call('PATCH', '/api/student/mail', { student: b.token, body: { mailAlias: 'not-an-email' } })).status, 400);
+
+  assert.equal((await post(mail('m1', 'han7603+s01@gmail.com', '123456'))).status, 200);
+  assert.equal((await post(mail('m1', 'han7603+s01@gmail.com', '123456'))).status, 200, '중복은 무시');
+  await post(mail('m2', 'han7603+s09@gmail.com', '999999'));
+
+  const inboxM = (await call('GET', '/api/master/state', { token })).data.inbox;
+  assert.equal(inboxM.length, 2);
+  const m1 = inboxM.find((m) => m.id === 'm1');
+  assert.equal(m1.code, '123456');
+  assert.deepEqual(m1.to, ['han7603+s01@gmail.com']);
+  assert.deepEqual(m1.links, ['https://auth.openai.com/verify?token=abc']);
+
+  // 학생 A 는 자기 메일만, B 는 없음
+  const meA = (await call('GET', '/api/student/me', { student: a.token })).data;
+  assert.deepEqual(meA.inbox.map((m) => m.code), ['123456']);
+  assert.equal(meA.inbox[0].text, undefined, '학생에게는 본문 전체를 주지 않음');
+  assert.equal((await call('GET', '/api/student/me', { student: b.token })).data.inbox.length, 0);
+
+  // 교사가 B 의 주소를 지정하면 B 도 받음, 끄면 학생 화면에서 사라짐
+  await call('PATCH', `/api/master/students/${b.studentId}/mail`, { token, body: { mailAlias: 'han7603+s09@gmail.com' } });
+  assert.deepEqual((await call('GET', '/api/student/me', { student: b.token })).data.inbox.map((m) => m.code), ['999999']);
+  await call('PATCH', '/api/master/inbox', { token, body: { enabled: false } });
+  assert.equal((await call('GET', '/api/student/me', { student: a.token })).data.inbox.length, 0);
+
+  // 키 재발급 후 예전 키 거부
+  const { data: { inboxKey } } = await call('POST', '/api/master/inbox/regen-key', { token });
+  assert.equal((await post(mail('m3', 'a@b.com', '111111'))).status, 401);
+  assert.equal((await post(mail('m3', 'a@b.com', '111111'), inboxKey)).status, 200);
+});
+
 // 로그인 차단 테스트는 이 IP 를 15분간 막으므로 항상 마지막에 둔다
 test('로그인 실패가 반복되면 차단', async () => {
   let last;

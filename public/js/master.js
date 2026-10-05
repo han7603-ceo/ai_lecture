@@ -116,6 +116,15 @@ function connectSocket() {
     if (i >= 0) S.materials[i] = m; else S.materials.push(m);
     renderMaterials();
   });
+  socket.on('inbox:new', (m) => {
+    if (S.inbox.some((x) => x.id === m.id)) return;
+    S.inbox.unshift(m);
+    const who = inboxStudents(m)[0];
+    toast(`📬 인증 메일 도착${who ? ` — ${who.seat}번 ${who.name}` : ''}${m.code ? ` · ${m.code}` : ''}`, 'ok', 5000);
+    renderInbox();
+  });
+  socket.on('inbox:remove', ({ ids }) => { S.inbox = S.inbox.filter((m) => !ids.includes(m.id)); renderInbox(); });
+  socket.on('inbox:config', ({ inboxEnabled, inboxKey }) => { S.inboxEnabled = inboxEnabled; S.inboxKey = inboxKey; renderInbox(); });
   socket.on('material:remove', ({ id }) => {
     S.materials = S.materials.filter((m) => m.id !== id);
     renderMaterials();
@@ -141,6 +150,7 @@ function renderAll() {
   renderCourseSelect();
   renderCourseBar();
   renderGrid();
+  renderInbox();
 }
 function renderSiteTitle() {
   $('#siteTitle').textContent = S.siteTitle;
@@ -424,7 +434,7 @@ $('#detailModal').addEventListener('click', (e) => { if (e.target.id === 'detail
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     if (!$('#matPvModal').classList.contains('hidden')) return closeMatPreview();
-    closeDetail(); closeModal('#joinModal'); closeModal('#settingsModal'); closeModal('#materialsModal');
+    closeDetail(); closeModal('#joinModal'); closeModal('#settingsModal'); closeModal('#materialsModal'); closeModal('#inboxModal');
   }
   if (detailId && !e.target.closest('input, textarea, select')) {
     if (e.key === 'ArrowLeft') stepDetail(-1);
@@ -441,6 +451,7 @@ function renderDetail() {
   $('#dName').textContent = s.name;
   $('#dSub').textContent = `${s.online ? '접속중' : `마지막 접속 ${timeAgo(s.lastSeen)}`} · 입장 ${clock(s.joinedAt)} · 파일 ${s.files.length}개`;
   $('#dZip').href = `/api/master/students/${s.id}/zip?t=${encodeURIComponent(token)}`;
+  $('#dMail').textContent = `📨 가입 메일: ${s.mailAlias || '등록 안 됨'} ✏️`;
   $('#dZip').classList.toggle('hidden', !s.files.length);
 
   const files = [...s.files].reverse().sort(byRecent);
@@ -689,7 +700,7 @@ $('#joinInfoBtn').addEventListener('click', openJoin);
 $('#codeChip').addEventListener('click', openJoin);
 $('#joinClose').addEventListener('click', () => closeModal('#joinModal'));
 function closeModal(sel) { $(sel).classList.add('hidden'); }
-for (const id of ['#joinModal', '#settingsModal', '#materialsModal', '#matPvModal']) {
+for (const id of ['#joinModal', '#settingsModal', '#materialsModal', '#matPvModal', '#inboxModal']) {
   $(id).addEventListener('click', (e) => { if (e.target.id === id.slice(1) || e.target.closest('[data-close]')) closeModal(id); });
 }
 
@@ -1002,3 +1013,103 @@ function closeMatPreview() {
   closeModal('#matPvModal');
 }
 $('#matPvModal').addEventListener('click', (e) => { if (e.target.id === 'matPvModal' || e.target.closest('[data-close]')) closeMatPreview(); });
+
+// ------------------------------------------------------------ 인증 메일 (Gmail Apps Script → 이 사이트)
+const inboxStudents = (m) => [...students.values()].filter((s) => s.mailAlias && m.to.includes(s.mailAlias));
+const liveInbox = () => (S.inbox || []).filter((m) => Date.now() - m.at < S.inboxTtlMin * 60000);
+
+function appsScriptCode() {
+  return `// 과제 보드 연결 — 이 Gmail 로 온 메일 중 QUERY 에 맞는 것만 과제 보드로 보냅니다.
+const SITE = '${location.origin}';
+const KEY = '${S.inboxKey}';
+const QUERY = 'from:openai.com newer_than:1d'; // 가져올 메일 조건 (Gmail 검색어)
+
+// 처음 한 번 실행: 1분마다 자동 확인하도록 등록
+function setup() {
+  ScriptApp.getProjectTriggers().forEach((t) => ScriptApp.deleteTrigger(t));
+  ScriptApp.newTrigger('sendToBoard').timeBased().everyMinutes(1).create();
+  PropertiesService.getScriptProperties().setProperty('since', String(Date.now() - 10 * 60 * 1000));
+  sendToBoard();
+}
+
+function sendToBoard() {
+  const props = PropertiesService.getScriptProperties();
+  const since = Number(props.getProperty('since') || Date.now() - 10 * 60 * 1000);
+  let newest = since;
+  let failed = false;
+  GmailApp.search(QUERY, 0, 30).forEach((thread) => {
+    thread.getMessages().forEach((m) => {
+      const t = m.getDate().getTime();
+      if (t <= since) return;
+      const res = UrlFetchApp.fetch(SITE + '/api/inbox', {
+        method: 'post',
+        contentType: 'application/json',
+        headers: { 'x-inbox-key': KEY },
+        muteHttpExceptions: true,
+        payload: JSON.stringify({
+          id: m.getId(), date: t, from: m.getFrom(), subject: m.getSubject(),
+          to: [m.getTo(), m.getCc(), m.getHeader('Delivered-To')].join(', '),
+          text: m.getPlainBody().slice(0, 8000),
+        }),
+      });
+      if (res.getResponseCode() === 200) newest = Math.max(newest, t); else failed = true;
+    });
+  });
+  if (!failed) props.setProperty('since', String(newest)); // 실패하면 다음 번에 다시 보냄 (중복은 사이트에서 무시)
+}
+`;
+}
+
+function renderInbox() {
+  if (!S) return;
+  const list = liveInbox();
+  $('#inboxCount').textContent = list.length;
+  $('#inboxCount').classList.toggle('hidden', !list.length);
+  if ($('#inboxModal').classList.contains('hidden')) return;
+  $('#inboxEnabled').checked = !!S.inboxEnabled;
+  $('#inboxTtl').textContent = ` · ${S.inboxTtlMin}분 뒤 자동 삭제`;
+  $('#inboxTtl2').textContent = `${S.inboxTtlMin}분`;
+  $('#inboxKey').textContent = S.inboxKey;
+  if ($('#inboxCode').value !== appsScriptCode()) $('#inboxCode').value = appsScriptCode();
+  $('#inboxEmpty').classList.toggle('hidden', list.length > 0);
+  $('#inboxList').replaceChildren(...list.map((m) => {
+    const who = inboxStudents(m);
+    return h('div', { class: 'inbox-item' },
+      h('div', { class: 'inbox-top' },
+        m.code ? h('button', { class: 'inbox-code-chip', title: '눌러서 복사', onclick: () => copyText(m.code, '코드를 복사했습니다.') }, m.code) : null,
+        h('div', { class: 'inbox-info' },
+          h('div', { class: 'inbox-who' }, who.length ? who.map((s) => `${s.seat}번 ${s.name}`).join(', ') : h('span', { class: 'muted' }, '연결된 학생 없음'),
+            h('span', { class: 'muted small' }, ` · ${m.to.join(', ') || '받는 주소 없음'}`)),
+          h('div', { class: 'inbox-subject', title: m.subject }, m.subject || '(제목 없음)'),
+          h('div', { class: 'muted small' }, `${clock(m.date)} 수신 · ${m.from}`)),
+        h('button', { class: 'icon-btn', title: '지우기', onclick: () => api(`/api/master/inbox/${encodeURIComponent(m.id)}`, { method: 'DELETE', headers: H() }).catch((e) => toast(e.message, 'error')) }, '🗑️')),
+      m.links.length ? h('div', { class: 'inbox-links' }, m.links.map((u) => h('a', { href: u, target: '_blank', rel: 'noopener noreferrer' }, '🔗 인증 링크'))) : null,
+      h('details', { class: 'inbox-text' }, h('summary', {}, '본문 보기'), h('pre', {}, m.text)));
+  }));
+}
+async function copyText(text, msg) {
+  try { await navigator.clipboard.writeText(text); toast(msg, 'ok'); } catch { toast('복사하지 못했습니다. 직접 선택해 복사해 주세요.', 'error'); }
+}
+$('#inboxBtn').addEventListener('click', () => {
+  $('#inboxModal').classList.remove('hidden');
+  $('#inboxSetup').open = !liveInbox().length;
+  renderInbox();
+});
+$('#inboxEnabled').addEventListener('change', async (e) => {
+  try { await api('/api/master/inbox', { method: 'PATCH', body: { enabled: e.target.checked }, headers: H() }); } catch (err) { toast(err.message, 'error'); }
+});
+$('#inboxCopy').addEventListener('click', () => copyText($('#inboxCode').value, '코드를 복사했습니다. Apps Script 에 붙여넣으세요.'));
+$('#inboxRegen').addEventListener('click', async () => {
+  if (!(await confirmDialog('연결 키를 새로 만들까요?\n예전 키를 쓰는 Apps Script 는 더 이상 메일을 보내지 못하므로, 새 코드로 다시 붙여넣어야 합니다.', { ok: '재발급', danger: true }))) return;
+  try { const r = await api('/api/master/inbox/regen-key', { method: 'POST', headers: H() }); S.inboxKey = r.inboxKey; renderInbox(); toast('재발급했습니다. 코드를 다시 복사해 붙여넣으세요.'); } catch (e) { toast(e.message, 'error'); }
+});
+setInterval(renderInbox, 60000); // 만료된 메일 숨김
+
+// 학생의 가입 메일(인증 메일을 받을 주소) 지정
+$('#dMail').addEventListener('click', async () => {
+  const s = students.get(detailId);
+  if (!s) return;
+  const v = await promptDialog(`${s.name} 학생의 가입 메일\n(이 주소로 온 인증 메일이 학생 화면에 표시됩니다. 비우면 해제)`, s.mailAlias || '', { ok: '저장', placeholder: 'han7603+s01@gmail.com' });
+  if (v == null) return;
+  try { await api(`/api/master/students/${s.id}/mail`, { method: 'PATCH', body: { mailAlias: v }, headers: H() }); toast('저장했습니다.', 'ok'); } catch (e) { toast(e.message, 'error'); }
+});

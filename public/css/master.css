@@ -199,3 +199,26 @@ mark { background: color-mix(in srgb, var(--warn) 45%, transparent); color: inhe
   .mat-body { grid-template-columns: 1fr; overflow: auto; }
   .mat-send, .mat-sent { overflow: visible; }
 }
+
+/* 인증 메일 */
+.modal.inbox { width: min(860px, 100%); }
+.inbox-toggle { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; margin-bottom: 12px; cursor: pointer; }
+.inbox-toggle input { accent-color: var(--primary); width: 18px; height: 18px; }
+.inbox-list { display: grid; gap: 8px; }
+.inbox-item { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; }
+.inbox-top { display: flex; align-items: center; gap: 12px; }
+.inbox-code-chip { font: 800 22px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 3px; padding: 10px 12px; border-radius: 10px; border: 1px dashed var(--primary); background: var(--primary-weak); color: var(--primary); cursor: pointer; flex: none; }
+.inbox-info { flex: 1; min-width: 0; }
+.inbox-who { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inbox-subject { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inbox-links { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 6px; font-size: 14px; }
+.inbox-text { margin-top: 6px; font-size: 13px; }
+.inbox-text summary { cursor: pointer; color: var(--muted); }
+.inbox-text pre { white-space: pre-wrap; word-break: break-word; background: var(--panel-2); padding: 8px 10px; border-radius: 8px; max-height: 240px; overflow: auto; margin: 6px 0 0; }
+.inbox-setup { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 12px; }
+.inbox-setup summary { cursor: pointer; font-weight: 700; }
+.inbox-steps { padding-left: 20px; line-height: 1.7; font-size: 14px; }
+.inbox-code-head { display: flex; align-items: center; gap: 6px; margin: 8px 0 6px; flex-wrap: wrap; }
+.inbox-code { width: 100%; height: 220px; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; }
+.d-mail { display: block; width: 100%; text-align: left; border: 1px dashed var(--line); background: transparent; border-radius: 8px; padding: 6px 10px; margin: 0 0 8px; font-size: 13px; color: var(--muted); cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.d-mail:hover { border-color: var(--primary); color: var(--text); }

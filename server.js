@@ -180,6 +180,7 @@ function publicStudent(s) {
     id: s.id, courseId: s.courseId, name: s.name, seat: s.seat,
     joinedAt: s.joinedAt, lastSeen: s.lastSeen, reviewedAt: s.reviewedAt || 0,
     online: (online.get(s.id) || 0) > 0,
+    mailAlias: s.mailAlias || '',
     files: s.files.map(publicFile),
   };
 }
@@ -361,6 +362,8 @@ app.get('/api/student/me', requireStudent, (req, res) => {
     allowedExt: [...ALLOWED_EXT],
     canConvert,
     materials: materialsFor(req.student).map((m) => studentMaterial(m, req.student.id)),
+    inboxEnabled: !!state.inboxEnabled,
+    inbox: inboxFor(req.student),
   });
 });
 
@@ -602,6 +605,10 @@ app.get('/api/master/state', requireMaster, (req, res) => {
     canConvert,
     usingDefaultPassword: !!state.usingDefaultPassword,
     maxFileMB: MAX_FILE_MB,
+    inbox: inbox.map(publicInbox),
+    inboxEnabled: !!state.inboxEnabled,
+    inboxKey: ensureInboxKey(),
+    inboxTtlMin: INBOX_TTL_MIN,
   });
 });
 
@@ -944,6 +951,115 @@ app.get('/materials/:id/pdf', async (req, res) => {
   } catch {
     res.status(500).send('PDF 변환에 실패했습니다.');
   }
+});
+
+// ---------------------------------------------------------------------------
+// 인증 메일 연결: 교사 Gmail 의 Apps Script 가 특정 메일(예: OpenAI 인증 메일)만 골라 보내면
+// 교사 대시보드에 표시하고, 받는 주소가 학생이 등록한 '가입 메일'과 같으면 그 학생 화면에도 표시.
+// 메일은 메모리에만 두고 INBOX_TTL_MIN 분 뒤 지운다.
+// ---------------------------------------------------------------------------
+const INBOX_TTL_MIN = 60;
+const INBOX_MAX = 300;
+let inbox = []; // 최신이 앞
+const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+const normEmail = (s) => String(s ?? '').trim().toLowerCase();
+const isEmail = (s) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s) && s.length <= 120;
+
+function ensureInboxKey() {
+  if (!state.inboxKey) { state.inboxKey = crypto.randomBytes(16).toString('hex'); saveState(); }
+  return state.inboxKey;
+}
+function inboxKeyOk(given) {
+  const a = Buffer.from(String(given || ''));
+  const b = Buffer.from(ensureInboxKey());
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+const publicInbox = (m) => ({
+  id: m.id, at: m.at, date: m.date, from: m.from, to: m.to, subject: m.subject, code: m.code, links: m.links, text: m.text,
+});
+const studentInbox = (m) => ({ id: m.id, at: m.at, subject: m.subject, code: m.code, links: m.links });
+const inboxFor = (s) => (state.inboxEnabled && s.mailAlias ? inbox.filter((m) => m.to.includes(s.mailAlias)).map(studentInbox) : []);
+const studentsWithAlias = (to) => Object.values(state.students).filter((s) => s.mailAlias && to.includes(s.mailAlias));
+
+// 메일 본문에서 인증 코드(6자리)와 인증용 링크만 추림
+function parseInbound(b) {
+  const id = cleanText(b?.id, 100);
+  if (!id) return null;
+  const subject = cleanText(b.subject, 200);
+  const text = String(b.text ?? '').replace(/\r/g, '').replace(/[\u0000-\u0008\u000b-\u001f]/g, '').slice(0, 8000);
+  const to = [...new Set((String(b.to ?? '').match(EMAIL_RE) || []).map(normEmail))].slice(0, 10);
+  const code = (subject.match(/\b(\d{6})\b/) || text.match(/\b(\d{6})\b/) || [])[1] || null;
+  const links = [...new Set(text.match(/https:\/\/[^\s<>"'()[\]]+/g) || [])]
+    .filter((u) => /verif|auth|login|log-in|confirm|magic|token|activate/i.test(u)).slice(0, 3);
+  const at = Date.now();
+  return { id, at, date: Number(b.date) || at, from: cleanText(b.from, 200), to, subject, code, links, text };
+}
+
+app.post('/api/inbox', (req, res) => {
+  if (!inboxKeyOk(req.get('x-inbox-key'))) return res.status(401).json({ error: '연결 키가 올바르지 않습니다.' });
+  const m = parseInbound(req.body);
+  if (!m) return res.status(400).json({ error: '메일 형식이 올바르지 않습니다.' });
+  if (inbox.some((x) => x.id === m.id)) return res.json({ ok: true, duplicate: true });
+  inbox.unshift(m);
+  inbox.length = Math.min(inbox.length, INBOX_MAX);
+  toMasters('inbox:new', publicInbox(m));
+  if (state.inboxEnabled) for (const s of studentsWithAlias(m.to)) toStudent(s.id, 'inbox:new', studentInbox(m));
+  res.json({ ok: true });
+});
+
+setInterval(() => {
+  const cut = Date.now() - INBOX_TTL_MIN * 60000;
+  const gone = inbox.filter((m) => m.at < cut).map((m) => m.id);
+  if (!gone.length) return;
+  inbox = inbox.filter((m) => m.at >= cut);
+  io.emit('inbox:remove', { ids: gone }); // id 만 보내므로 전체에 알려도 됨
+}, 60000).unref();
+
+function sendMailState(s) {
+  pushStudent(s);
+  toStudent(s.id, 'mail:update', { mailAlias: s.mailAlias || '', inbox: inboxFor(s) });
+}
+function setAlias(s, raw, res) {
+  const alias = normEmail(raw);
+  if (alias && !isEmail(alias)) return res.status(400).json({ error: '메일 주소 형식이 올바르지 않습니다.' });
+  if (alias && Object.values(state.students).some((x) => x.id !== s.id && x.mailAlias === alias)) {
+    return res.status(409).json({ error: '이미 다른 학생이 등록한 메일입니다. 선생님께 확인해 주세요.' });
+  }
+  s.mailAlias = alias || undefined;
+  saveState();
+  sendMailState(s);
+  return res.json({ mailAlias: s.mailAlias || '', inbox: inboxFor(s) });
+}
+// 학생은 처음 한 번만 등록 (남의 주소로 바꿔 코드를 보는 일을 막기 위해 변경은 교사만)
+app.patch('/api/student/mail', requireStudent, (req, res) => {
+  if (req.student.mailAlias) return res.status(409).json({ error: '이미 등록했습니다. 바꾸려면 선생님께 요청하세요.' });
+  if (!normEmail(req.body?.mailAlias)) return res.status(400).json({ error: '메일 주소를 입력해 주세요.' });
+  setAlias(req.student, req.body.mailAlias, res);
+});
+app.patch('/api/master/students/:id/mail', requireMaster, (req, res) => {
+  const s = state.students[req.params.id];
+  if (!s) return res.status(404).json({ error: '학생을 찾을 수 없습니다.' });
+  setAlias(s, req.body?.mailAlias, res);
+});
+app.patch('/api/master/inbox', requireMaster, (req, res) => {
+  state.inboxEnabled = !!req.body?.enabled;
+  saveState();
+  toMasters('inbox:config', { inboxEnabled: state.inboxEnabled, inboxKey: ensureInboxKey() });
+  io.emit('inbox:config', { inboxEnabled: state.inboxEnabled });
+  for (const s of Object.values(state.students)) if (s.mailAlias) toStudent(s.id, 'mail:update', { mailAlias: s.mailAlias, inbox: inboxFor(s) });
+  res.json({ ok: true });
+});
+app.post('/api/master/inbox/regen-key', requireMaster, (req, res) => {
+  state.inboxKey = crypto.randomBytes(16).toString('hex');
+  saveState();
+  toMasters('inbox:config', { inboxEnabled: !!state.inboxEnabled, inboxKey: state.inboxKey });
+  res.json({ inboxKey: state.inboxKey });
+});
+app.delete('/api/master/inbox/:id', requireMaster, (req, res) => {
+  inbox = inbox.filter((m) => m.id !== req.params.id);
+  toMasters('inbox:remove', { ids: [req.params.id] });
+  io.emit('inbox:remove', { ids: [req.params.id] });
+  res.json({ ok: true });
 });
 
 // ---------------------------------------------------------------------------
