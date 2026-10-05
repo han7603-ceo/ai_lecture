@@ -1045,7 +1045,7 @@ app.patch('/api/master/inbox', requireMaster, (req, res) => {
   state.inboxEnabled = !!req.body?.enabled;
   saveState();
   toMasters('inbox:config', { inboxEnabled: state.inboxEnabled, inboxKey: ensureInboxKey() });
-  io.emit('inbox:config', { inboxEnabled: state.inboxEnabled });
+  io.except('master').emit('inbox:config', { inboxEnabled: state.inboxEnabled }); // 학생용 (연결 키 없음)
   for (const s of Object.values(state.students)) if (s.mailAlias) toStudent(s.id, 'mail:update', { mailAlias: s.mailAlias, inbox: inboxFor(s) });
   res.json({ ok: true });
 });

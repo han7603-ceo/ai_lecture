@@ -124,7 +124,11 @@ function connectSocket() {
     renderInbox();
   });
   socket.on('inbox:remove', ({ ids }) => { S.inbox = S.inbox.filter((m) => !ids.includes(m.id)); renderInbox(); });
-  socket.on('inbox:config', ({ inboxEnabled, inboxKey }) => { S.inboxEnabled = inboxEnabled; S.inboxKey = inboxKey; renderInbox(); });
+  socket.on('inbox:config', ({ inboxEnabled, inboxKey }) => {
+    S.inboxEnabled = inboxEnabled;
+    if (inboxKey) S.inboxKey = inboxKey;
+    renderInbox();
+  });
   socket.on('material:remove', ({ id }) => {
     S.materials = S.materials.filter((m) => m.id !== id);
     renderMaterials();
