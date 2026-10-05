@@ -2,7 +2,7 @@
 .code-head { position: relative; text-align: center; }
 .code-head h1 { margin: 4px 0; font-size: 22px; word-break: keep-all; }
 .code-head .dot { position: absolute; top: 4px; right: 0; }
-.code-list { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; }
+.code-list { display: flex; flex-wrap: wrap; justify-content: center; align-items: flex-start; gap: 12px; }
 .code-list > .code-card { width: min(100%, 520px); }
 .code-card { display: grid; gap: 8px; justify-items: center; text-align: center; padding: 18px 16px; }
 .code-card.fresh { border-color: var(--ok); box-shadow: 0 0 0 3px var(--ok-weak); }
@@ -15,3 +15,6 @@
 .code-who { font-weight: 800; font-size: 15px; overflow-wrap: anywhere; }
 @media (min-width: 900px) { body:has(.code-who) .code-page { max-width: 1200px; } body:has(.code-who) .code-list > .code-card { width: 340px; } }
 .code-page > p { text-align: center; }
+.code-olds { width: 100%; border-top: 1px dashed var(--line); padding-top: 8px; display: grid; gap: 4px; justify-items: center; }
+.code-old { display: flex; align-items: center; gap: 10px; }
+.code-old-num { font: 700 18px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 3px; color: var(--muted); background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 3px 10px; cursor: pointer; }
