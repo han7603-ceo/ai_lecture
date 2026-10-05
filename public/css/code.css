@@ -11,3 +11,5 @@
 .code-empty { text-align: center; padding: 24px 16px; }
 .code-empty-icon { font-size: 40px; }
 .code-error { text-align: center; padding: 40px 16px; }
+.code-who { font-weight: 800; font-size: 18px; word-break: break-all; }
+@media (min-width: 900px) { body:has(.code-who) .code-page { max-width: 1100px; } body:has(.code-who) .code-list { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); } }

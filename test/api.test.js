@@ -312,6 +312,16 @@ test('인증 메일 연결: 키 검사, 코드 추출, 계정별 코드 확인 �
   assert.equal((await call('GET', '/api/code/nope')).status, 404);
   assert.equal((await call('GET', `/code/${b1.token}`)).status, 200);
 
+  // 통합 링크: 등록한 모든 계정의 코드 + 계정 이름 (등록 안 된 주소의 메일은 제외)
+  const allTok = (await call('GET', '/api/master/state', { token })).data.codeAllToken;
+  assert.match(allTok, /^[0-9a-f]{48}$/);
+  const all = (await call('GET', `/api/code/${allTok}`)).data;
+  assert.equal(all.all, true);
+  assert.deepEqual(all.inbox.map((m) => `${m.label}:${m.code}`), ['홍길동:123456']);
+  const allTok2 = (await call('POST', '/api/master/mailboxes/all-link/regen', { token })).data.codeAllToken;
+  assert.equal((await call('GET', `/api/code/${allTok}`)).status, 404, '예전 통합 링크 무효');
+  assert.equal((await call('GET', `/api/code/${allTok2}`)).status, 200);
+
   // 링크 다시 만들기 → 예전 링크 무효, 삭제
   const re = (await call('PATCH', `/api/master/mailboxes/${b1.id}`, { token, body: { regen: true, label: '홍길동(1)' } })).data.mailbox;
   assert.notEqual(re.token, b1.token);

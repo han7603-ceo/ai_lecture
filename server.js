@@ -235,6 +235,11 @@ io.use((socket, next) => {
     socket.data.role = 'master';
     return next();
   }
+  if (role === 'code' && isCodeAllToken(token)) {
+    socket.data.role = 'code';
+    socket.data.mailboxId = 'all';
+    return next();
+  }
   const box = role === 'code' && mailboxByToken(token);
   if (box) {
     socket.data.role = 'code';
@@ -650,6 +655,7 @@ app.get('/api/master/state', requireMaster, (req, res) => {
     inbox: inbox.map(publicInbox),
     guests: Object.values(state.guests).map(publicGuest),
     mailboxes: Object.values(state.mailboxes).map(publicMailbox),
+    codeAllToken: ensureCodeAllToken(),
     inboxKey: ensureInboxKey(),
     inboxTtlMin: INBOX_TTL_MIN,
     inboxImap: imapStatus,
@@ -1053,6 +1059,14 @@ const studentInbox = (m) => ({ id: m.id, at: m.at, subject: m.subject, code: m.c
 //   mailboxes: { id: { id, address, label, token, createdAt } }
 const publicMailbox = (b) => ({ id: b.id, address: b.address, label: b.label, token: b.token, createdAt: b.createdAt });
 const mailboxByToken = (t) => (t ? Object.values(state.mailboxes).find((b) => b.token === t) : null);
+// 통합 링크: 등록한 모든 계정의 코드를 한 화면에 (프로젝터용). 교사가 만들고 다시 만들 수 있음
+const ensureCodeAllToken = () => { if (!state.codeAllToken) { state.codeAllToken = newToken(); saveState(); } return state.codeAllToken; };
+const isCodeAllToken = (t) => !!t && t === state.codeAllToken;
+const allMailboxInbox = () => {
+  const boxes = Object.values(state.mailboxes);
+  return inbox.map((m) => ({ m, b: boxes.find((x) => m.to.includes(x.address)) }))
+    .filter((x) => x.b).map(({ m, b }) => ({ ...studentInbox(m), label: b.label, address: b.address }));
+};
 const mailboxInbox = (b) => inbox.filter((m) => m.to.includes(b.address)).map(studentInbox);
 const pushMailboxes = () => toMasters('mailboxes:update', Object.values(state.mailboxes).map(publicMailbox));
 
@@ -1078,7 +1092,12 @@ function ingestInbound(raw) {
   inbox.unshift(m);
   inbox.length = Math.min(inbox.length, INBOX_MAX);
   toMasters('inbox:new', publicInbox(m));
-  for (const b of Object.values(state.mailboxes)) if (m.to.includes(b.address)) io.to(`mbox:${b.id}`).emit('inbox:new', studentInbox(m));
+  for (const b of Object.values(state.mailboxes)) {
+    if (!m.to.includes(b.address)) continue;
+    io.to(`mbox:${b.id}`).emit('inbox:new', studentInbox(m));
+    io.to('mbox:all').emit('inbox:new', { ...studentInbox(m), label: b.label, address: b.address });
+    break;
+  }
   return 'ok';
 }
 app.post('/api/inbox', (req, res) => {
@@ -1151,7 +1170,17 @@ app.delete('/api/master/mailboxes/:id', requireMaster, (req, res) => {
   res.json({ ok: true });
 });
 // 학생용 코드 확인 페이지 데이터 (/code/:token)
+app.post('/api/master/mailboxes/all-link/regen', requireMaster, (req, res) => {
+  state.codeAllToken = newToken();
+  io.in('mbox:all').disconnectSockets(true);
+  saveState();
+  toMasters('mailboxes:all', { codeAllToken: state.codeAllToken });
+  res.json({ codeAllToken: state.codeAllToken });
+});
 app.get('/api/code/:token', (req, res) => {
+  if (isCodeAllToken(req.params.token)) {
+    return res.json({ siteTitle: state.siteTitle, all: true, label: '전체 계정', address: `${Object.keys(state.mailboxes).length}개 계정`, ttlMin: INBOX_TTL_MIN, inbox: allMailboxInbox() });
+  }
   const b = mailboxByToken(req.params.token);
   if (!b) return res.status(404).json({ error: '링크가 올바르지 않거나 다시 만들어졌습니다. 선생님께 새 링크를 받아 주세요.' });
   res.json({ siteTitle: state.siteTitle, label: b.label, address: b.address, ttlMin: INBOX_TTL_MIN, inbox: mailboxInbox(b) });

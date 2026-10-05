@@ -154,6 +154,7 @@ function connectSocket() {
   socket.on('inbox:imap', (st) => { S.inboxImap = st; renderInbox(); });
   socket.on('inbox:config', ({ inboxKey }) => { if (inboxKey) S.inboxKey = inboxKey; renderInbox(); });
   socket.on('mailboxes:update', (list) => { S.mailboxes = list; renderInbox(); });
+  socket.on('mailboxes:all', ({ codeAllToken }) => { S.codeAllToken = codeAllToken; });
   socket.on('material:remove', ({ id }) => {
     S.materials = S.materials.filter((m) => m.id !== id);
     renderMaterials();
@@ -1252,6 +1253,13 @@ async function deleteMailbox(b) {
   if (!(await confirmDialog(`${b.label} (${b.address}) 를 삭제할까요?\n이 계정의 코드 확인 링크도 쓸 수 없게 됩니다.`, { ok: '삭제', danger: true }))) return;
   try { await api(`/api/master/mailboxes/${b.id}`, { method: 'DELETE', headers: H() }); } catch (e) { toast(e.message, 'error'); }
 }
+const allCodeLink = () => `${baseUrl()}/code/${S.codeAllToken}`;
+$('#mboxAllCopy').addEventListener('click', () => copyText(allCodeLink(), '통합 링크를 복사했습니다. 모든 계정의 코드가 보이니 학생에게는 주지 마세요.'));
+$('#mboxAllQr').addEventListener('click', () => showQr({ label: '전체 계정', address: `${(S.mailboxes || []).length}개 계정`, token: S.codeAllToken }));
+$('#mboxAllRegen').addEventListener('click', async () => {
+  if (!(await confirmDialog('통합 링크를 다시 만들까요?\n예전 통합 링크·QR 은 바로 쓸 수 없게 됩니다.', { ok: '다시 만들기', danger: true }))) return;
+  try { const r = await api('/api/master/mailboxes/all-link/regen', { method: 'POST', headers: H() }); S.codeAllToken = r.codeAllToken; toast('새 통합 링크를 만들었습니다.'); } catch (e) { toast(e.message, 'error'); }
+});
 function showQr(b) {
   const url = codeLink(b);
   const w = window.open('', '_blank', 'width=420,height=560');
