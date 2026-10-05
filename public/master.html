@@ -33,18 +33,20 @@
       <h1 class="title editable" id="siteTitleBtn" title="홈페이지 이름 변경"><span id="siteTitle"></span><small>✏️</small></h1>
       <div class="course-picker">
         <select class="input" id="courseSelect" aria-label="과목 선택"></select>
-        <button class="btn" id="addCourseBtn" title="과목 추가">＋ 과목</button>
+        <button class="btn master-only" id="addCourseBtn" title="과목 추가">＋ 과목</button>
       </div>
       <div class="spacer"></div>
       <div class="top-actions">
         <button class="btn primary" id="joinInfoBtn">📱 입장 안내 (QR)</button>
-        <button class="btn" id="materialsBtn">📤 자료 보내기</button>
-        <button class="btn" id="inboxBtn">📬 인증 메일 <span class="badge danger hidden" id="inboxCount"></span></button>
-        <button class="btn" id="zipAllBtn">🗜️ 전체 ZIP</button>
-        <button class="btn" id="settingsBtn">⚙️ 설정</button>
+        <button class="btn master-only" id="materialsBtn">📤 자료 보내기</button>
+        <button class="btn master-only" id="inboxBtn">📬 인증 메일 <span class="badge danger hidden" id="inboxCount"></span></button>
+        <button class="btn master-only" id="zipAllBtn">🗜️ 전체 ZIP</button>
+        <button class="btn master-only" id="settingsBtn">⚙️ 설정</button>
         <button class="btn ghost" id="logoutBtn" title="로그아웃">⎋</button>
       </div>
     </header>
+
+    <div class="guest-bar hidden" id="guestBar"></div>
 
     <div class="notice-bar hidden" id="pwNotice">
       ⚠️ 기본 비밀번호(admin1234)를 사용 중입니다. <button class="btn sm" id="pwNoticeBtn">비밀번호 변경</button>
@@ -57,8 +59,8 @@
         <span class="badge ok hidden" id="liveBadge"></span>
         <span class="badge danger hidden" id="closedBadge">수업 종료 · 제출 마감</span>
         <div class="spacer"></div>
-        <button class="btn primary hidden" id="startBtn">▶ 수업 시작</button>
-        <button class="btn danger hidden" id="endBtn">⏹ 수업 종료</button>
+        <button class="btn primary hidden master-only" id="startBtn">▶ 수업 시작</button>
+        <button class="btn danger hidden master-only" id="endBtn">⏹ 수업 종료</button>
       </div>
       <div class="stats" id="stats"></div>
       <div class="tools">
@@ -110,11 +112,11 @@
       <div class="detail-body">
         <aside class="detail-files">
           <div class="detail-actions">
-            <a class="btn sm primary" id="dZip">🗜️ 이 학생 ZIP</a>
-            <button class="btn sm" id="dSendMat">📤 자료 보내기</button>
-            <button class="btn sm" id="dKick">🚪 학생 삭제</button>
+            <a class="btn sm primary master-only" id="dZip">🗜️ 이 학생 ZIP</a>
+            <button class="btn sm master-only" id="dSendMat">📤 자료 보내기</button>
+            <button class="btn sm master-only" id="dKick">🚪 학생 삭제</button>
           </div>
-          <button class="d-mail" id="dMail" title="인증 메일을 받을 가입 메일 지정"></button>
+          <button class="d-mail master-only" id="dMail" title="인증 메일을 받을 가입 메일 지정"></button>
           <div id="dFiles"></div>
         </aside>
         <section class="detail-preview">
@@ -178,6 +180,23 @@
         <label class="field"><span>QR 코드에 사용할 접속 주소</span><select class="input" id="sBase"></select></label>
         <p class="muted small" style="margin-top:-8px">학생 기기에서 접속 가능한 주소여야 합니다. (같은 Wi-Fi 의 내부 IP 또는 배포 주소)</p>
         <div class="row-actions"><button class="btn primary" id="sSiteSave">홈페이지 설정 저장</button></div>
+
+        <hr>
+        <h3>👀 참관(게스트) 링크</h3>
+        <p class="muted small" style="margin-top:-6px">허락한 선생님이 로그인 없이 대시보드를 <b>읽기 전용</b>으로 볼 수 있는 링크입니다. 제출 파일 보기는 되고, 삭제·수업 시작/종료·자료 보내기·ZIP·설정·인증 메일은 볼 수 없습니다. 만료되거나 취소하면 바로 막힙니다.</p>
+        <div class="guest-form">
+          <input class="input" id="gLabel" maxlength="40" placeholder="누구에게? (예: 김○○ 선생님)">
+          <select class="input" id="gScope"></select>
+          <select class="input" id="gHours">
+            <option value="2">2시간</option>
+            <option value="8">8시간</option>
+            <option value="24" selected>1일</option>
+            <option value="168">7일</option>
+            <option value="720">30일</option>
+          </select>
+          <button class="btn primary" id="gCreate">링크 만들기</button>
+        </div>
+        <div id="gList" class="guest-list"></div>
 
         <hr>
         <h3>보안</h3>

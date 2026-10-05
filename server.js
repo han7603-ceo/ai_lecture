@@ -75,6 +75,7 @@ function loadState() {
     s.courses ||= {};
     s.students ||= {};
     s.materials ||= {};
+    s.guests ||= {};
     return s;
   } catch {
     return {
@@ -83,6 +84,7 @@ function loadState() {
       courses: {},
       students: {},
       materials: {},
+      guests: {},
     };
   }
 }
@@ -203,7 +205,24 @@ app.set('trust proxy', 1);
 const server = http.createServer(app);
 const io = new Server(server, { maxHttpBufferSize: 1e6 });
 
-const toMasters = (event, payload) => io.to('master').emit(event, payload);
+// 참관(게스트) 링크: 교사가 허락한 사람이 대시보드를 읽기 전용으로 봄. 링크 토큰 자체가 인증 수단이며
+// 만료되거나 교사가 취소하면 바로 막힌다. 인증 메일·연결 키·학생 가입 메일 등은 보내지 않는다.
+const guestByToken = (t) => {
+  if (!t) return null;
+  const g = Object.values(state.guests).find((x) => x.token === t);
+  return g && g.expiresAt > Date.now() ? g : null;
+};
+const guestSees = (g, courseId) => !g.courseId || g.courseId === courseId;
+const guestStudent = (p) => ({ ...p, mailAlias: '' });
+const GUEST_EVENTS = new Set(['student:update', 'student:remove', 'course:update', 'course:remove', 'material:update', 'material:remove', 'site:update', 'config:update']);
+const guestRooms = () => [...io.sockets.adapter.rooms.keys()].filter((r) => r.startsWith('guest:'));
+const toMasters = (event, payload) => {
+  io.to('master').emit(event, payload);
+  if (!GUEST_EVENTS.has(event)) return;
+  const cid = payload.courseId ?? (event.startsWith('course:') ? payload.id : undefined);
+  const rooms = cid ? ['guest:all', `guest:${cid}`] : guestRooms();
+  if (rooms.length) io.to(rooms).emit(event, event === 'student:update' ? guestStudent(payload) : payload);
+};
 const toCourse = (courseId, event, payload) => io.to(`course:${courseId}`).emit(event, payload);
 const toStudent = (studentId, event, payload) => io.to(`student:${studentId}`).emit(event, payload);
 const pushStudent = (s) => toMasters('student:update', publicStudent(s));
@@ -212,6 +231,12 @@ io.use((socket, next) => {
   const { role, token } = socket.handshake.auth || {};
   if (role === 'master' && masterTokens.has(token)) {
     socket.data.role = 'master';
+    return next();
+  }
+  const g = role === 'guest' && guestByToken(token);
+  if (g) {
+    socket.data.role = 'guest';
+    socket.data.guestId = g.id;
     return next();
   }
   if (role === 'student') {
@@ -228,6 +253,12 @@ io.use((socket, next) => {
 io.on('connection', (socket) => {
   if (socket.data.role === 'master') {
     socket.join('master');
+    return;
+  }
+  if (socket.data.role === 'guest') {
+    const g = state.guests[socket.data.guestId];
+    socket.join(`guest:${g?.courseId || 'all'}`);
+    socket.join(`guestid:${socket.data.guestId}`);
     return;
   }
   const sid = socket.data.studentId;
@@ -472,7 +503,8 @@ function resolveFileAccess(req) {
   const owner = Object.values(state.students).find((s) => s.files.some((f) => f.id === fileId));
   if (!owner) return null;
   const t = req.query.t || '';
-  const isMaster = masterTokens.has(t);
+  const g = guestByToken(t);
+  const isMaster = masterTokens.has(t) || (g && guestSees(g, owner.courseId));
   if (!isMaster && owner.token !== t) return null;
   return { owner, file: owner.files.find((f) => f.id === fileId) };
 }
@@ -606,6 +638,7 @@ app.get('/api/master/state', requireMaster, (req, res) => {
     usingDefaultPassword: !!state.usingDefaultPassword,
     maxFileMB: MAX_FILE_MB,
     inbox: inbox.map(publicInbox),
+    guests: Object.values(state.guests).map(publicGuest),
     inboxEnabled: !!state.inboxEnabled,
     inboxKey: ensureInboxKey(),
     inboxTtlMin: INBOX_TTL_MIN,
@@ -734,8 +767,10 @@ app.delete('/api/master/courses/:id', requireMaster, async (req, res) => {
   for (const m of materialsOfCourse(c.id)) delete state.materials[m.id];
   await fsp.rm(path.join(MATERIAL_DIR, c.id), { recursive: true, force: true });
   delete state.courses[c.id];
+  for (const g of Object.values(state.guests)) if (g.courseId === c.id) dropGuest(g.id);
   saveState();
   toMasters('course:remove', { id: c.id });
+  pushGuests();
   res.json({ ok: true });
 });
 
@@ -921,6 +956,8 @@ function resolveMaterialAccess(req) {
   if (!m) return null;
   const t = req.query.t || '';
   if (masterTokens.has(t)) return { m };
+  const g = guestByToken(t);
+  if (g && guestSees(g, m.courseId)) return { m }; // 참관자가 열어도 학생 '확인'으로 치지 않음
   const s = Object.values(state.students).find((x) => x.token === t);
   if (!s || !canSeeMaterial(m, s)) return null;
   if (!req.query.nt && !m.seen[s.id]) {
@@ -1060,6 +1097,65 @@ app.delete('/api/master/inbox/:id', requireMaster, (req, res) => {
   toMasters('inbox:remove', { ids: [req.params.id] });
   io.emit('inbox:remove', { ids: [req.params.id] });
   res.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// 참관(게스트) 링크 관리 + 참관자용 읽기 전용 상태
+// ---------------------------------------------------------------------------
+const publicGuest = (g) => ({ id: g.id, token: g.token, label: g.label, courseId: g.courseId, createdAt: g.createdAt, expiresAt: g.expiresAt });
+const pushGuests = () => toMasters('guests:update', Object.values(state.guests).map(publicGuest));
+function dropGuest(id) {
+  delete state.guests[id];
+  io.in(`guestid:${id}`).disconnectSockets(true);
+}
+
+app.post('/api/master/guests', requireMaster, (req, res) => {
+  const courseId = req.body?.courseId || null;
+  if (courseId && !state.courses[courseId]) return res.status(404).json({ error: '과목을 찾을 수 없습니다.' });
+  const hours = Math.min(24 * 30, Math.max(1, Math.round(Number(req.body?.hours) || 24)));
+  const g = {
+    id: newId(), token: newToken(), label: cleanText(req.body?.label, 40) || '참관자',
+    courseId, createdAt: Date.now(), expiresAt: Date.now() + hours * 3600000,
+  };
+  state.guests[g.id] = g;
+  saveState();
+  pushGuests();
+  res.json({ guest: publicGuest(g) });
+});
+app.delete('/api/master/guests/:id', requireMaster, (req, res) => {
+  if (!state.guests[req.params.id]) return res.status(404).json({ error: '링크를 찾을 수 없습니다.' });
+  dropGuest(req.params.id);
+  saveState();
+  pushGuests();
+  res.json({ ok: true });
+});
+// 만료된 링크 정리 (접속 중인 참관자도 끊음)
+setInterval(() => {
+  const expired = Object.values(state.guests).filter((g) => g.expiresAt <= Date.now());
+  if (!expired.length) return;
+  for (const g of expired) dropGuest(g.id);
+  saveState();
+  pushGuests();
+}, 60000).unref();
+
+app.get('/api/guest/state', (req, res) => {
+  const g = guestByToken(getToken(req, 'x-master-token'));
+  if (!g) return res.status(401).json({ error: '참관 링크가 만료되었거나 취소되었습니다.' });
+  const courses = Object.values(state.courses).filter((c) => guestSees(g, c.id));
+  const ids = new Set(courses.map((c) => c.id));
+  res.json({
+    guest: { label: g.label, courseId: g.courseId, expiresAt: g.expiresAt },
+    siteTitle: state.siteTitle,
+    courses: courses.sort((a, b) => a.createdAt - b.createdAt).map(publicCourse),
+    students: Object.values(state.students).filter((s) => ids.has(s.courseId)).map((s) => guestStudent(publicStudent(s))),
+    materials: Object.values(state.materials).filter((m) => ids.has(m.courseId)).map(publicMaterial),
+    publicUrl,
+    publicUrlSource,
+    lanUrls: lanUrls(),
+    canConvert,
+    usingDefaultPassword: false,
+    maxFileMB: MAX_FILE_MB,
+  });
 });
 
 // ---------------------------------------------------------------------------
