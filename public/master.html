@@ -116,7 +116,6 @@
             <button class="btn sm master-only" id="dSendMat">📤 자료 보내기</button>
             <button class="btn sm master-only" id="dKick">🚪 학생 삭제</button>
           </div>
-          <button class="d-mail master-only" id="dMail" title="인증 메일을 받을 가입 메일 지정"></button>
           <div id="dFiles"></div>
         </aside>
         <section class="detail-preview">
@@ -265,9 +264,30 @@
       <div class="modal-head"><strong>📬 인증 메일</strong><span class="muted small" id="inboxTtl"></span><div class="spacer"></div><button class="icon-btn" data-close aria-label="닫기">✕</button></div>
       <div class="modal-body">
         <div class="inbox-status" id="inboxStatus"></div>
-        <label class="inbox-toggle"><input type="checkbox" id="inboxEnabled"> 학생 화면에 <b>📨 인증 메일</b> 칸 보이기 <span class="muted small">(학생이 등록한 가입 메일로 온 코드만 그 학생에게 표시)</span></label>
         <div id="inboxList" class="inbox-list"></div>
         <p class="muted empty-text" id="inboxEmpty">아직 받은 메일이 없습니다. 아래 <b>연결 설정</b>을 먼저 해 주세요.</p>
+        <details class="inbox-setup" id="mboxSec">
+          <summary>🔑 학생별 코드 확인 링크 <span class="badge primary" id="mboxCount">0</span></summary>
+          <p class="muted small">계정 주소를 등록하면 계정마다 <b>개인 링크·QR</b>이 생깁니다. 학생은 그 링크에서 <b>자기 계정으로 온 코드만</b> 봅니다. 과목·입장 코드와 상관없어서 과목을 새로 만들거나 지워도 그대로 쓸 수 있습니다.</p>
+          <div class="mbox-add">
+            <textarea class="input" id="mboxText" rows="4" spellcheck="false" placeholder="한 줄에 하나: 주소 이름(선택)&#10;ad.bodacompany+s01@gmail.com 홍길동&#10;ad.bodacompany+s02@gmail.com 김철수"></textarea>
+            <div class="mbox-gen">
+              <span class="muted small">빠른 채우기:</span>
+              <input class="input" id="mboxBase" placeholder="ad.bodacompany@gmail.com">
+              <span class="muted small">+</span><input class="input" id="mboxPrefix" value="s" style="width:56px">
+              <input class="input" id="mboxFrom" type="number" min="1" value="1" style="width:70px"><span class="muted small">~</span>
+              <input class="input" id="mboxTo" type="number" min="1" value="21" style="width:70px">
+              <button class="btn sm" id="mboxFill">채우기</button>
+              <div class="spacer"></div>
+              <button class="btn sm primary" id="mboxAdd">등록</button>
+            </div>
+          </div>
+          <div class="mbox-list-head">
+            <div class="spacer"></div>
+            <button class="btn sm" id="mboxPrint">🖨️ QR 카드 인쇄</button>
+          </div>
+          <div id="mboxList" class="mbox-list"></div>
+        </details>
         <details class="inbox-setup" id="inboxSetup">
           <summary>⚙️ 연결 설정 (Gmail → 이 사이트, 처음 한 번)</summary>
           <h4>방법 1 (추천) · 서버가 메일함을 직접 확인 — 앱 비밀번호</h4>

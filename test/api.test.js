@@ -268,11 +268,8 @@ test('학생 링크 제출: 주소 검사, 교사 조회, 이동, ZIP·CSV, 삭�
   assert.equal((await submit({ url: 'https://example.com' })).status, 403);
 });
 
-test('인증 메일 연결: 키 검사, 코드 추출, 학생 매칭, 등록 제한', async () => {
+test('인증 메일 연결: 키 검사, 코드 추출, 계정별 코드 확인 링크', async () => {
   const { data: { token } } = await call('POST', '/api/master/login', { body: { password: 'test-pw' } });
-  const { data: { course } } = await call('POST', '/api/master/courses', { token, body: { name: '메일반', maxStudents: 5 } });
-  const a = (await call('POST', '/api/join', { body: { code: course.code, name: '가' } })).data;
-  const b = (await call('POST', '/api/join', { body: { code: course.code, name: '나' } })).data;
   const st = (await call('GET', '/api/master/state', { token })).data;
   assert.match(st.inboxKey, /^[0-9a-f]{32}$/);
   const post = (body, key = st.inboxKey) => fetch(`${BASE}/api/inbox`, {
@@ -284,12 +281,16 @@ test('인증 메일 연결: 키 검사, 코드 추출, 학생 매칭, 등록 제
   });
   assert.equal((await post(mail('m0', 'x@y.com', '000000'), 'wrong')).status, 401);
 
-  // 학생 화면 칸 켜기 + 가입 메일 등록 (학생은 한 번만, 중복 불가)
-  await call('PATCH', '/api/master/inbox', { token, body: { enabled: true } });
-  assert.equal((await call('PATCH', '/api/student/mail', { student: a.token, body: { mailAlias: 'Han7603+S01@gmail.com' } })).status, 200);
-  assert.equal((await call('PATCH', '/api/student/mail', { student: a.token, body: { mailAlias: 'han7603+s02@gmail.com' } })).status, 409, '두 번째 변경 불가');
-  assert.equal((await call('PATCH', '/api/student/mail', { student: b.token, body: { mailAlias: 'han7603+s01@gmail.com' } })).status, 409, '남의 주소 불가');
-  assert.equal((await call('PATCH', '/api/student/mail', { student: b.token, body: { mailAlias: 'not-an-email' } })).status, 400);
+  // 계정 등록 (한 줄에 하나, 이름 선택, 형식 오류는 건너뜀, 대소문자 무시)
+  const reg = await call('POST', '/api/master/mailboxes', { token, body: { text: 'Han7603+S01@gmail.com 홍길동\nhan7603+s02@gmail.com\nnot-an-email' } });
+  assert.equal(reg.status, 200);
+  assert.equal(reg.data.added, 2);
+  assert.deepEqual(reg.data.bad, ['not-an-email']);
+  const b1 = reg.data.mailboxes.find((b) => b.address === 'han7603+s01@gmail.com');
+  const b2 = reg.data.mailboxes.find((b) => b.address === 'han7603+s02@gmail.com');
+  assert.equal(b1.label, '홍길동');
+  assert.equal(b2.label, 'han7603+s02');
+  assert.equal((await call('POST', '/api/master/mailboxes', { token, body: { text: 'han7603+s01@gmail.com' } })).data.added, 0, '중복 무시');
 
   assert.equal((await post(mail('m1', 'han7603+s01@gmail.com', '123456'))).status, 200);
   assert.equal((await post(mail('m1', 'han7603+s01@gmail.com', '123456'))).status, 200, '중복은 무시');
@@ -302,22 +303,56 @@ test('인증 메일 연결: 키 검사, 코드 추출, 학생 매칭, 등록 제
   assert.deepEqual(m1.to, ['han7603+s01@gmail.com']);
   assert.deepEqual(m1.links, ['https://auth.openai.com/verify?token=abc']);
 
-  // 학생 A 는 자기 메일만, B 는 없음
-  const meA = (await call('GET', '/api/student/me', { student: a.token })).data;
-  assert.deepEqual(meA.inbox.map((m) => m.code), ['123456']);
-  assert.equal(meA.inbox[0].text, undefined, '학생에게는 본문 전체를 주지 않음');
-  assert.equal((await call('GET', '/api/student/me', { student: b.token })).data.inbox.length, 0);
+  // 코드 확인 링크: 자기 주소 것만, 본문 없음, 과목·입장과 무관
+  const c1 = (await call('GET', `/api/code/${b1.token}`)).data;
+  assert.equal(c1.label, '홍길동');
+  assert.deepEqual(c1.inbox.map((m) => m.code), ['123456']);
+  assert.equal(c1.inbox[0].text, undefined);
+  assert.equal((await call('GET', `/api/code/${b2.token}`)).data.inbox.length, 0);
+  assert.equal((await call('GET', '/api/code/nope')).status, 404);
+  assert.equal((await call('GET', `/code/${b1.token}`)).status, 200);
 
-  // 교사가 B 의 주소를 지정하면 B 도 받음, 끄면 학생 화면에서 사라짐
-  await call('PATCH', `/api/master/students/${b.studentId}/mail`, { token, body: { mailAlias: 'han7603+s09@gmail.com' } });
-  assert.deepEqual((await call('GET', '/api/student/me', { student: b.token })).data.inbox.map((m) => m.code), ['999999']);
-  await call('PATCH', '/api/master/inbox', { token, body: { enabled: false } });
-  assert.equal((await call('GET', '/api/student/me', { student: a.token })).data.inbox.length, 0);
+  // 링크 다시 만들기 → 예전 링크 무효, 삭제
+  const re = (await call('PATCH', `/api/master/mailboxes/${b1.id}`, { token, body: { regen: true, label: '홍길동(1)' } })).data.mailbox;
+  assert.notEqual(re.token, b1.token);
+  assert.equal(re.label, '홍길동(1)');
+  assert.equal((await call('GET', `/api/code/${b1.token}`)).status, 404);
+  assert.equal((await call('GET', `/api/code/${re.token}`)).status, 200);
+  assert.equal((await call('DELETE', `/api/master/mailboxes/${b2.id}`, { token })).status, 200);
+  assert.equal((await call('GET', `/api/code/${b2.token}`)).status, 404);
+  // 학생·참관자는 계정 관리 불가
+  assert.equal((await call('POST', '/api/master/mailboxes', { body: { text: 'a@b.com' } })).status, 401);
 
   // 키 재발급 후 예전 키 거부
   const { data: { inboxKey } } = await call('POST', '/api/master/inbox/regen-key', { token });
   assert.equal((await post(mail('m3', 'a@b.com', '111111'))).status, 401);
   assert.equal((await post(mail('m3', 'a@b.com', '111111'), inboxKey)).status, 200);
+});
+
+test('수업 시작: 지난 수업 자료는 학생 화면에서 내리고 다시 보내기 가능', async () => {
+  const { data: { token } } = await call('POST', '/api/master/login', { body: { password: 'test-pw' } });
+  const { data: { course } } = await call('POST', '/api/master/courses', { token, body: { name: '보관반', maxStudents: 5 } });
+  const a = (await call('POST', '/api/join', { body: { code: course.code, name: '가' } })).data;
+  const form = new FormData();
+  form.append('files', new Blob(['W1']), '1주차.txt');
+  form.append('target', 'all');
+  const m = (await call('POST', `/api/master/courses/${course.id}/materials`, { token, body: form })).data.materials[0];
+  await call('GET', `/materials/${m.id}?t=${a.token}`); // 학생이 확인
+  assert.equal((await call('GET', '/api/student/me', { student: a.token })).data.materials.length, 1);
+
+  await call('POST', `/api/master/courses/${course.id}/start`, { token });
+  assert.equal((await call('GET', '/api/student/me', { student: a.token })).data.materials.length, 0, '새 수업에선 안 보임');
+  assert.equal((await call('GET', `/materials/${m.id}?t=${a.token}`)).status, 404);
+  const archived = (await call('GET', '/api/master/state', { token })).data.materials.find((x) => x.id === m.id);
+  assert.equal(archived.archived, true, '교사에겐 보관');
+
+  const r = await call('POST', `/api/master/materials/${m.id}/restore`, { token });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.material.archived, false);
+  assert.deepEqual(r.data.material.seen, {}, '확인 기록 초기화');
+  const me = (await call('GET', '/api/student/me', { student: a.token })).data;
+  assert.equal(me.materials.length, 1);
+  assert.equal(me.materials[0].seenAt, null, '다시 NEW');
 });
 
 test('참관(게스트) 링크: 읽기 전용, 과목 범위, 민감 정보 제외, 취소', async () => {
@@ -330,7 +365,6 @@ test('참관(게스트) 링크: 읽기 전용, 과목 범위, 민감 정보 제�
   const fa = (await call('POST', '/api/student/upload', { student: a.token, body: form })).data.student.files[0];
   const form2 = new FormData(); form2.append('files', new Blob(['OTHER']), 'b.txt');
   const fb = (await call('POST', '/api/student/upload', { student: b.token, body: form2 })).data.student.files[0];
-  await call('PATCH', '/api/student/mail', { student: a.token, body: { mailAlias: 'guest-test+1@gmail.com' } });
 
   const g = (await call('POST', '/api/master/guests', { token, body: { label: '김 선생님', courseId: c1.id, hours: 2 } })).data.guest;
   assert.match(g.token, /^[0-9a-f]{48}$/);
@@ -340,8 +374,7 @@ test('참관(게스트) 링크: 읽기 전용, 과목 범위, 민감 정보 제�
   assert.equal(st.status, 200);
   assert.deepEqual(st.data.courses.map((c) => c.name), ['참관반'], '허락한 과목만');
   assert.deepEqual(st.data.students.map((s) => s.name), ['가']);
-  assert.equal(st.data.students[0].mailAlias, '', '가입 메일 숨김');
-  for (const k of ['inbox', 'inboxKey', 'guests']) assert.equal(st.data[k], undefined, k);
+  for (const k of ['inbox', 'inboxKey', 'guests', 'mailboxes']) assert.equal(st.data[k], undefined, k);
 
   // 파일: 허락한 과목만 열람
   assert.equal((await call('GET', `/files/${fa.id}?t=${g.token}`)).data.toString(), 'HELLO');
