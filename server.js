@@ -1053,7 +1053,7 @@ function inboxKeyOk(given) {
 const publicInbox = (m) => ({
   id: m.id, at: m.at, date: m.date, from: m.from, to: m.to, subject: m.subject, code: m.code, links: m.links, text: m.text,
 });
-const studentInbox = (m) => ({ id: m.id, at: m.at, subject: m.subject, code: m.code, links: m.links });
+const studentInbox = (m) => ({ id: m.id, at: m.at, date: m.date, subject: m.subject, code: m.code, links: m.links });
 
 // 계정별 '코드 확인 링크': 과목·좌석과 상관없이, 등록한 주소로 온 코드만 그 링크에서 보임
 //   mailboxes: { id: { id, address, label, token, createdAt } }

@@ -1,8 +1,9 @@
 .code-page { max-width: 560px; margin: 0 auto; padding: 24px 16px 48px; display: grid; gap: 14px; }
 .code-head { position: relative; text-align: center; }
-.code-head h1 { margin: 4px 0; font-size: 24px; }
+.code-head h1 { margin: 4px 0; font-size: 22px; word-break: keep-all; }
 .code-head .dot { position: absolute; top: 4px; right: 0; }
-.code-list { display: grid; gap: 12px; }
+.code-list { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; }
+.code-list > .code-card { width: min(100%, 520px); }
 .code-card { display: grid; gap: 8px; justify-items: center; text-align: center; padding: 18px 16px; }
 .code-card.fresh { border-color: var(--ok); box-shadow: 0 0 0 3px var(--ok-weak); }
 .code-big { font: 800 44px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 8px; padding: 14px 18px 14px 26px; border-radius: 14px; border: 2px dashed var(--ok); background: var(--ok-weak); color: var(--ok); cursor: pointer; }
@@ -11,5 +12,6 @@
 .code-empty { text-align: center; padding: 24px 16px; }
 .code-empty-icon { font-size: 40px; }
 .code-error { text-align: center; padding: 40px 16px; }
-.code-who { font-weight: 800; font-size: 18px; word-break: break-all; }
-@media (min-width: 900px) { body:has(.code-who) .code-page { max-width: 1100px; } body:has(.code-who) .code-list { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); } }
+.code-who { font-weight: 800; font-size: 15px; overflow-wrap: anywhere; }
+@media (min-width: 900px) { body:has(.code-who) .code-page { max-width: 1200px; } body:has(.code-who) .code-list > .code-card { width: 340px; } }
+.code-page > p { text-align: center; }
