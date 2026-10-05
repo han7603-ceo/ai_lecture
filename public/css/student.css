@@ -88,10 +88,3 @@
 .link-label { display: block; font-weight: 700; font-size: 14px; margin-bottom: 6px; }
 .link-row { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) auto; gap: 6px; }
 @media (max-width: 560px) { .link-row { grid-template-columns: 1fr auto; } .link-row #linkUrl { grid-column: 1 / -1; } }
-.mail-section { border-color: var(--ok); }
-.mail-item { align-items: center; }
-.mail-code { font: 800 22px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 3px; padding: 12px; border-radius: 10px; border: 1px dashed var(--ok); background: var(--ok-weak); color: var(--ok); cursor: pointer; flex: none; }
-.mail-links { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 4px; font-size: 14px; }
-.mail-section .section-head { flex-wrap: wrap; }
-.mail-section .section-head h2 { white-space: nowrap; }
-.mail-section #mailAliasText { word-break: break-all; }

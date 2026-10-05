@@ -146,17 +146,15 @@ function connectSocket() {
     if (S.inbox.some((x) => x.id === m.id)) return;
     S.inbox.unshift(m);
     const who = inboxStudents(m)[0];
-    toast(`📬 인증 메일 도착${who ? ` — ${who.seat}번 ${who.name}` : ''}${m.code ? ` · ${m.code}` : ''}`, 'ok', 5000);
+    toast(`📬 인증 메일 도착${who ? ` — ${who.label}` : ''}${m.code ? ` · ${m.code}` : ''}`, 'ok', 5000);
     renderInbox();
   });
   socket.on('guests:update', (list) => { S.guests = list; renderGuests(); });
   socket.on('inbox:remove', ({ ids }) => { S.inbox = S.inbox.filter((m) => !ids.includes(m.id)); renderInbox(); });
   socket.on('inbox:imap', (st) => { S.inboxImap = st; renderInbox(); });
-  socket.on('inbox:config', ({ inboxEnabled, inboxKey }) => {
-    S.inboxEnabled = inboxEnabled;
-    if (inboxKey) S.inboxKey = inboxKey;
-    renderInbox();
-  });
+  socket.on('inbox:config', ({ inboxKey }) => { if (inboxKey) S.inboxKey = inboxKey; renderInbox(); });
+  socket.on('mailboxes:update', (list) => { S.mailboxes = list; renderInbox(); });
+  socket.on('mailboxes:all', ({ codeAllToken }) => { S.codeAllToken = codeAllToken; });
   socket.on('material:remove', ({ id }) => {
     S.materials = S.materials.filter((m) => m.id !== id);
     renderMaterials();
@@ -484,7 +482,6 @@ function renderDetail() {
   $('#dName').textContent = s.name;
   $('#dSub').textContent = `${s.online ? '접속중' : `마지막 접속 ${timeAgo(s.lastSeen)}`} · 입장 ${clock(s.joinedAt)} · 파일 ${s.files.length}개`;
   $('#dZip').href = `/api/master/students/${s.id}/zip?t=${encodeURIComponent(token)}`;
-  $('#dMail').textContent = `📨 가입 메일: ${s.mailAlias || '등록 안 됨'} ✏️`;
   $('#dZip').classList.toggle('hidden', !s.files.length);
 
   const files = [...s.files].reverse().sort(byRecent);
@@ -994,10 +991,28 @@ function recipientsOf(m) {
 }
 function renderMaterials() {
   if (!S?.materials || !course()) return;
-  const mats = S.materials.filter((m) => m.courseId === courseId).sort((a, b) => b.createdAt - a.createdAt);
+  const all = S.materials.filter((m) => m.courseId === courseId).sort((a, b) => b.createdAt - a.createdAt);
+  const mats = all.filter((m) => !m.archived);
+  const old = all.filter((m) => m.archived);
   $('#matSentCount').textContent = mats.length;
   $('#matSentEmpty').classList.toggle('hidden', mats.length > 0);
-  $('#matSentList').replaceChildren(...mats.map((m) => {
+  $('#matSentList').replaceChildren(...mats.map(materialItem),
+    old.length ? h('details', { class: 'mat-archive' },
+      h('summary', {}, `🗂️ 지난 수업 자료 ${old.length}개 (학생 화면에서 내려감)`),
+      old.map((m) => h('div', { class: 'mat-item archived' },
+        h('div', { class: 'mat-item-top' },
+          h('div', { class: 'mat-ico' }, m.kind === 'link' ? '🔗' : iconOf(m.ext)),
+          h('div', { class: 'mat-info' },
+            h('div', { class: 'mat-name', title: m.name }, m.name),
+            h('div', { class: 'mat-sub' }, `${m.kind === 'link' ? hostOf(m.url) : formatBytes(m.size)} · ${timeAgo(m.createdAt)} 보냄`)),
+          h('button', { class: 'btn sm', onclick: () => restoreMaterial(m) }, '다시 보내기'),
+          h('button', { class: 'icon-btn', title: '완전히 삭제', onclick: () => recallMaterial(m) }, '🗑️'))))) : null);
+}
+async function restoreMaterial(m) {
+  try { await api(`/api/master/materials/${m.id}/restore`, { method: 'POST', headers: H() }); toast(`'${m.name}' 을(를) 다시 보냈습니다.`, 'ok'); } catch (e) { toast(e.message, 'error'); }
+}
+function materialItem(m) {
+  {
     const rec = recipientsOf(m);
     const seenN = rec.filter((s) => m.seen[s.id]).length;
     const targetLabel = m.target === 'all' ? '전체 학생' : `${rec.length}명 (${rec.slice(0, 3).map((s) => s.name).join(', ')}${rec.length > 3 ? ' 외' : ''})`;
@@ -1022,7 +1037,7 @@ function renderMaterials() {
         h('div', { class: 'mat-seen-list' }, rec.map((s) => h('span', {
           class: m.seen[s.id] ? 'yes' : '', title: m.seen[s.id] ? `${clock(m.seen[s.id])} 확인` : '아직 안 봄',
         }, `${m.seen[s.id] ? '✓' : '·'} ${s.seat}. ${s.name}`)))) : null);
-  }));
+  }
 }
 async function recallMaterial(m) {
   if (!(await confirmDialog(`'${m.name}' 자료를 회수할까요?\n학생 화면에서도 사라집니다.`, { ok: '회수', danger: true }))) return;
@@ -1049,7 +1064,7 @@ function closeMatPreview() {
 $('#matPvModal').addEventListener('click', (e) => { if (e.target.id === 'matPvModal' || e.target.closest('[data-close]')) closeMatPreview(); });
 
 // ------------------------------------------------------------ 인증 메일 (Gmail Apps Script → 이 사이트)
-const inboxStudents = (m) => [...students.values()].filter((s) => s.mailAlias && m.to.includes(s.mailAlias));
+const inboxStudents = (m) => (S.mailboxes || []).filter((b) => m.to.includes(b.address));
 const liveInbox = () => (S.inbox || []).filter((m) => Date.now() - m.at < S.inboxTtlMin * 60000);
 
 function appsScriptCode() {
@@ -1100,7 +1115,7 @@ function renderInbox() {
   $('#inboxCount').textContent = list.length;
   $('#inboxCount').classList.toggle('hidden', !list.length);
   if ($('#inboxModal').classList.contains('hidden')) return;
-  $('#inboxEnabled').checked = !!S.inboxEnabled;
+  renderMailboxes();
   const im = S.inboxImap || {};
   $('#inboxStatus').className = `inbox-status ${im.configured ? (im.ok ? 'ok' : (im.error ? 'err' : '')) : ''}`;
   $('#inboxStatus').textContent = !im.configured
@@ -1118,7 +1133,7 @@ function renderInbox() {
       h('div', { class: 'inbox-top' },
         m.code ? h('button', { class: 'inbox-code-chip', title: '눌러서 복사', onclick: () => copyText(m.code, '코드를 복사했습니다.') }, m.code) : null,
         h('div', { class: 'inbox-info' },
-          h('div', { class: 'inbox-who' }, who.length ? who.map((s) => `${s.seat}번 ${s.name}`).join(', ') : h('span', { class: 'muted' }, '연결된 학생 없음'),
+          h('div', { class: 'inbox-who' }, who.length ? who.map((b) => b.label).join(', ') : h('span', { class: 'muted' }, '등록 안 된 주소'),
             h('span', { class: 'muted small' }, ` · ${m.to.join(', ') || '받는 주소 없음'}`)),
           h('div', { class: 'inbox-subject', title: m.subject }, m.subject || '(제목 없음)'),
           h('div', { class: 'muted small' }, `${clock(m.date)} 수신 · ${m.from}`)),
@@ -1135,24 +1150,12 @@ $('#inboxBtn').addEventListener('click', () => {
   $('#inboxSetup').open = !liveInbox().length && !S.inboxImap?.ok;
   renderInbox();
 });
-$('#inboxEnabled').addEventListener('change', async (e) => {
-  try { await api('/api/master/inbox', { method: 'PATCH', body: { enabled: e.target.checked }, headers: H() }); } catch (err) { toast(err.message, 'error'); }
-});
 $('#inboxCopy').addEventListener('click', () => copyText($('#inboxCode').value, '코드를 복사했습니다. Apps Script 에 붙여넣으세요.'));
 $('#inboxRegen').addEventListener('click', async () => {
   if (!(await confirmDialog('연결 키를 새로 만들까요?\n예전 키를 쓰는 Apps Script 는 더 이상 메일을 보내지 못하므로, 새 코드로 다시 붙여넣어야 합니다.', { ok: '재발급', danger: true }))) return;
   try { const r = await api('/api/master/inbox/regen-key', { method: 'POST', headers: H() }); S.inboxKey = r.inboxKey; renderInbox(); toast('재발급했습니다. 코드를 다시 복사해 붙여넣으세요.'); } catch (e) { toast(e.message, 'error'); }
 });
 setInterval(renderInbox, 60000); // 만료된 메일 숨김
-
-// 학생의 가입 메일(인증 메일을 받을 주소) 지정
-$('#dMail').addEventListener('click', async () => {
-  const s = students.get(detailId);
-  if (!s) return;
-  const v = await promptDialog(`${s.name} 학생의 가입 메일\n(이 주소로 온 인증 메일이 학생 화면에 표시됩니다. 비우면 해제)`, s.mailAlias || '', { ok: '저장', placeholder: 'han7603+s01@gmail.com' });
-  if (v == null) return;
-  try { await api(`/api/master/students/${s.id}/mail`, { method: 'PATCH', body: { mailAlias: v }, headers: H() }); toast('저장했습니다.', 'ok'); } catch (e) { toast(e.message, 'error'); }
-});
 
 // ------------------------------------------------------------ 참관(게스트) 링크
 function renderGuestBar() {
@@ -1195,4 +1198,88 @@ $('#gCreate').addEventListener('click', async () => {
     renderGuests();
     copyText(guestLink(r.guest), '참관 링크를 만들고 복사했습니다. 메신저로 보내 주세요.');
   } catch (e) { toast(e.message, 'error'); }
+});
+
+// ------------------------------------------------------------ 학생별 코드 확인 링크 (/code/<토큰>)
+const codeLink = (b) => `${baseUrl()}/code/${b.token}`;
+function renderMailboxes() {
+  const list = [...(S.mailboxes || [])].sort((a, b) => a.address.localeCompare(b.address, 'en', { numeric: true }));
+  $('#mboxCount').textContent = list.length;
+  if (!$('#mboxBase').value) $('#mboxBase').value = S.inboxImap?.user || '';
+  $('#mboxList').replaceChildren(...(list.length ? list.map((b) => {
+    const live = liveInbox().filter((m) => m.to.includes(b.address));
+    return h('div', { class: 'mbox-item' },
+      h('div', { class: 'mbox-info' },
+        h('div', { class: 'mbox-name' }, b.label, live[0]?.code ? h('span', { class: 'mbox-code' }, live[0].code) : null),
+        h('div', { class: 'muted small' }, b.address)),
+      h('button', { class: 'btn sm primary', onclick: () => copyText(codeLink(b), `${b.label} 링크를 복사했습니다.`) }, '링크 복사'),
+      h('button', { class: 'btn sm', onclick: () => showQr(b) }, 'QR'),
+      h('button', { class: 'icon-btn', title: '이름 바꾸기', onclick: () => renameMailbox(b) }, '✏️'),
+      h('button', { class: 'icon-btn', title: '링크 다시 만들기 (예전 링크 무효)', onclick: () => regenMailbox(b) }, '🔄'),
+      h('button', { class: 'icon-btn', title: '삭제', onclick: () => deleteMailbox(b) }, '🗑️'));
+  }) : [h('p', { class: 'muted small' }, '등록한 계정이 없습니다.')]));
+}
+$('#mboxFill').addEventListener('click', () => {
+  const base = $('#mboxBase').value.trim();
+  const m = /^([^@\s]+)@([^@\s]+)$/.exec(base);
+  if (!m) return toast('기본 주소를 입력해 주세요. (예: ad.bodacompany@gmail.com)', 'error');
+  const from = Math.max(1, Number($('#mboxFrom').value) || 1);
+  const to = Math.min(from + 199, Math.max(from, Number($('#mboxTo').value) || from));
+  const pad = String(to).length < 2 ? 2 : String(to).length;
+  const prefix = $('#mboxPrefix').value.trim();
+  const lines = [];
+  for (let i = from; i <= to; i++) lines.push(`${m[1]}+${prefix}${String(i).padStart(pad, '0')}@${m[2]} ${i}번`);
+  $('#mboxText').value = lines.join('\n');
+});
+$('#mboxAdd').addEventListener('click', async () => {
+  try {
+    const r = await api('/api/master/mailboxes', { method: 'POST', body: { text: $('#mboxText').value }, headers: H() });
+    S.mailboxes = r.mailboxes;
+    $('#mboxText').value = '';
+    renderMailboxes();
+    toast(`${r.added}개 등록했습니다.${r.bad.length ? ` (주소 형식 오류 ${r.bad.length}개: ${r.bad.slice(0, 3).join(', ')})` : ''}`, r.bad.length ? 'error' : 'ok', 5000);
+  } catch (e) { toast(e.message, 'error'); }
+});
+async function renameMailbox(b) {
+  const v = await promptDialog(`${b.address} 이름`, b.label);
+  if (v == null || !v.trim()) return;
+  try { await api(`/api/master/mailboxes/${b.id}`, { method: 'PATCH', body: { label: v }, headers: H() }); } catch (e) { toast(e.message, 'error'); }
+}
+async function regenMailbox(b) {
+  if (!(await confirmDialog(`${b.label} 링크를 다시 만들까요?\n예전 링크·QR 은 바로 쓸 수 없게 되므로 학생에게 새 링크를 다시 줘야 합니다.`, { ok: '다시 만들기', danger: true }))) return;
+  try { await api(`/api/master/mailboxes/${b.id}`, { method: 'PATCH', body: { regen: true }, headers: H() }); toast('새 링크를 만들었습니다.'); } catch (e) { toast(e.message, 'error'); }
+}
+async function deleteMailbox(b) {
+  if (!(await confirmDialog(`${b.label} (${b.address}) 를 삭제할까요?\n이 계정의 코드 확인 링크도 쓸 수 없게 됩니다.`, { ok: '삭제', danger: true }))) return;
+  try { await api(`/api/master/mailboxes/${b.id}`, { method: 'DELETE', headers: H() }); } catch (e) { toast(e.message, 'error'); }
+}
+const allCodeLink = () => `${baseUrl()}/code/${S.codeAllToken}`;
+$('#mboxAllCopy').addEventListener('click', () => copyText(allCodeLink(), '통합 링크를 복사했습니다. 모든 계정의 코드가 보이니 학생에게는 주지 마세요.'));
+$('#mboxAllQr').addEventListener('click', () => showQr({ label: '전체 계정', address: `${(S.mailboxes || []).length}개 계정`, token: S.codeAllToken }));
+$('#mboxAllRegen').addEventListener('click', async () => {
+  if (!(await confirmDialog('통합 링크를 다시 만들까요?\n예전 통합 링크·QR 은 바로 쓸 수 없게 됩니다.', { ok: '다시 만들기', danger: true }))) return;
+  try { const r = await api('/api/master/mailboxes/all-link/regen', { method: 'POST', headers: H() }); S.codeAllToken = r.codeAllToken; toast('새 통합 링크를 만들었습니다.'); } catch (e) { toast(e.message, 'error'); }
+});
+function showQr(b) {
+  const url = codeLink(b);
+  const w = window.open('', '_blank', 'width=420,height=560');
+  if (!w) return toast('팝업이 차단되었습니다.', 'error');
+  w.document.write(`<!doctype html><meta charset="utf-8"><title>${b.label} 코드 확인</title><body style="font-family:sans-serif;text-align:center;padding:24px">
+    <h2 style="margin:0 0 4px">🔑 ${escHtml(b.label)}</h2><div style="color:#666;font-size:13px">${escHtml(b.address)}</div>
+    <img src="/api/qr?text=${encodeURIComponent(url)}" style="width:300px;height:300px;margin:12px 0"><div style="font-size:12px;word-break:break-all;color:#666">${escHtml(url)}</div></body>`);
+}
+const escHtml = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+$('#mboxPrint').addEventListener('click', () => {
+  const list = [...(S.mailboxes || [])].sort((a, b) => a.address.localeCompare(b.address, 'en', { numeric: true }));
+  if (!list.length) return toast('등록한 계정이 없습니다.', 'error');
+  const w = window.open('', '_blank');
+  if (!w) return toast('팝업이 차단되었습니다.', 'error');
+  w.document.write(`<!doctype html><meta charset="utf-8"><title>코드 확인 QR 카드</title>
+  <style>body{font-family:sans-serif;margin:16px}.g{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+  .c{border:1px dashed #999;border-radius:10px;padding:10px;text-align:center;break-inside:avoid}
+  .c img{width:150px;height:150px}.n{font-weight:800;font-size:16px}.a{font-size:11px;color:#555;word-break:break-all}
+  .t{font-size:11px;color:#777;margin-top:4px}@media print{button{display:none}}</style>
+  <button onclick="print()">🖨️ 인쇄</button><h3>${escHtml(S.siteTitle)} · 인증 코드 확인 QR</h3><div class="g">${list.map((b) => `
+    <div class="c"><div class="n">🔑 ${escHtml(b.label)}</div><img src="/api/qr?text=${encodeURIComponent(codeLink(b))}"><div class="a">${escHtml(b.address)}</div>
+    <div class="t">휴대폰으로 찍어 즐겨찾기 · 다른 사람에게 보여 주지 마세요</div></div>`).join('')}</div>`);
 });

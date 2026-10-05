@@ -220,8 +220,6 @@ mark { background: color-mix(in srgb, var(--warn) 45%, transparent); color: inhe
 .inbox-steps { padding-left: 20px; line-height: 1.7; font-size: 14px; }
 .inbox-code-head { display: flex; align-items: center; gap: 6px; margin: 8px 0 6px; flex-wrap: wrap; }
 .inbox-code { width: 100%; height: 220px; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; }
-.d-mail { display: block; width: 100%; text-align: left; border: 1px dashed var(--line); background: transparent; border-radius: 8px; padding: 6px 10px; margin: 0 0 8px; font-size: 13px; color: var(--muted); cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.d-mail:hover { border-color: var(--primary); color: var(--text); }
 
 /* 참관(게스트) 모드 */
 body.guest .master-only { display: none !important; }
@@ -238,3 +236,18 @@ body.guest .editable small { display: none; }
 .inbox-status.ok { background: var(--ok-weak); color: var(--ok); font-weight: 700; }
 .inbox-status.err { background: var(--danger-weak); color: var(--danger); font-weight: 700; }
 .inbox-setup h4 { margin: 14px 0 4px; font-size: 14px; }
+
+/* 코드 확인 링크 · 지난 수업 자료 */
+.mbox-add { display: grid; gap: 6px; margin: 8px 0; }
+.mbox-add textarea { font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.mbox-gen { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.mbox-gen #mboxBase { width: 230px; }
+.mbox-list-head { display: flex; align-items: center; margin: 8px 0 6px; }
+.mbox-list { display: grid; gap: 6px; max-height: 320px; overflow: auto; }
+.mbox-item { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 10px; }
+.mbox-info { flex: 1; min-width: 0; }
+.mbox-name { font-weight: 700; display: flex; align-items: center; gap: 8px; }
+.mbox-code { font: 800 13px ui-monospace, monospace; color: var(--ok); background: var(--ok-weak); border-radius: 6px; padding: 1px 6px; letter-spacing: 1px; }
+.mat-archive { margin-top: 10px; border-top: 1px dashed var(--line); padding-top: 8px; }
+.mat-archive summary { cursor: pointer; color: var(--muted); font-size: 14px; margin-bottom: 6px; }
+.mat-item.archived { opacity: .8; }

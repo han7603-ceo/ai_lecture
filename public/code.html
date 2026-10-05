@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex">
+  <title>인증 코드 확인</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/code.css">
+</head>
+<body>
+  <main class="code-page">
+    <header class="code-head">
+      <div class="muted small" id="cSite"></div>
+      <h1>🔑 <span id="cLabel">인증 코드</span></h1>
+      <div class="muted small" id="cAddr"></div>
+      <span class="dot" id="cDot" title="실시간 연결"></span>
+    </header>
+    <section id="cList" class="code-list"></section>
+    <div class="card code-empty hidden" id="cEmpty">
+      <div class="code-empty-icon">📭</div>
+      <p><b>아직 받은 인증 코드가 없습니다.</b></p>
+      <p class="muted small">ChatGPT 등에서 로그인하거나 코드를 요청하면 1분 안에 여기에 자동으로 나타납니다. 이 화면을 켜 두세요.</p>
+    </div>
+    <p class="muted small center" id="cHint"></p>
+    <p class="muted small center">📌 이 페이지를 휴대폰 <b>홈 화면에 추가</b>하거나 즐겨찾기해 두면 언제든 바로 확인할 수 있습니다. 링크는 다른 사람에게 보여 주지 마세요.</p>
+  </main>
+  <script src="/socket.io/socket.io.min.js"></script>
+  <script type="module" src="/js/code.js"></script>
+</body>
+</html>

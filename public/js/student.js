@@ -94,7 +94,6 @@ function enterMain() {
   $('#limitInfo').textContent = `파일당 최대 ${me.maxFileMB}MB`;
   renderHeader();
   renderMaterials();
-  renderMail();
   renderDone();
   bindUpload();
   connectSocket();
@@ -168,14 +167,6 @@ function connectSocket() {
     }
     renderMaterials();
   });
-  socket.on('inbox:new', (m) => {
-    if (!me.inbox.some((x) => x.id === m.id)) me.inbox.unshift(m);
-    toast(`📨 인증 메일이 도착했습니다${m.code ? `: ${m.code}` : ''}`, 'ok', 6000);
-    renderMail();
-  });
-  socket.on('inbox:remove', ({ ids }) => { me.inbox = me.inbox.filter((m) => !ids.includes(m.id)); renderMail(); });
-  socket.on('inbox:config', ({ inboxEnabled }) => { me.inboxEnabled = inboxEnabled; renderMail(); });
-  socket.on('mail:update', ({ mailAlias, inbox }) => { me.student.mailAlias = mailAlias; me.inbox = inbox; renderMail(); });
   socket.on('material:remove', ({ id }) => {
     me.materials = me.materials.filter((m) => m.id !== id);
     renderMaterials();
@@ -428,36 +419,3 @@ function fileItem(m) {
       h('a', { class: 'icon-btn', href: matUrl(m, '&download=1'), title: '다운로드' }, '⬇️')));
 }
 
-// ------------------------------------------------------------ 인증 메일 (선생님 Gmail → 내 가입 메일로 온 것만)
-function renderMail() {
-  me.inbox ||= [];
-  $('#mailSection').classList.toggle('hidden', !me.inboxEnabled);
-  if (!me.inboxEnabled) return;
-  const alias = me.student.mailAlias;
-  $('#mailForm').classList.toggle('hidden', !!alias);
-  $('#mailAliasText').textContent = alias ? `가입 메일: ${alias}` : '';
-  $('#mailEmpty').classList.toggle('hidden', !alias || me.inbox.length > 0);
-  $('#mailList').replaceChildren(...me.inbox.map((m) => h('div', { class: 'done-item mail-item' },
-    m.code ? h('button', { class: 'mail-code', title: '눌러서 복사', onclick: () => copyCode(m.code) }, m.code) : h('div', { class: 'dthumb' }, '📨'),
-    h('div', { class: 'dinfo' },
-      h('div', { class: 'dname', title: m.subject }, m.subject || '(제목 없음)'),
-      h('div', { class: 'dsub' }, `${timeAgo(m.at)} 도착${m.code ? ' · 코드를 누르면 복사됩니다' : ''}`),
-      m.links.length ? h('div', { class: 'mail-links' }, m.links.map((u) => h('a', { href: u, target: '_blank', rel: 'noopener noreferrer' }, '🔗 인증 링크 열기'))) : null))));
-}
-async function copyCode(code) {
-  try { await navigator.clipboard.writeText(code); toast('코드를 복사했습니다.', 'ok'); } catch { toast(`코드: ${code}`, 'info', 6000); }
-}
-$('#mailForm').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const v = $('#mailInput').value.trim();
-  if (!v) return $('#mailInput').focus();
-  if (!(await confirmDialog(`'${v}' 로 등록할까요?\n등록 후에는 선생님만 바꿀 수 있습니다.`, { ok: '등록' }))) return;
-  try {
-    const r = await api('/api/student/mail', { method: 'PATCH', body: { mailAlias: v }, headers: authHeaders() });
-    me.student.mailAlias = r.mailAlias;
-    me.inbox = r.inbox;
-    renderMail();
-    toast('등록했습니다. 인증 메일이 오면 여기에 표시됩니다.', 'ok');
-  } catch (err) { toast(err.message, 'error', 4000); }
-});
-setInterval(() => { if (me?.inboxEnabled) renderMail(); }, 30000); // "n분 전" 갱신

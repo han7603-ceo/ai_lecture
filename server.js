@@ -77,6 +77,7 @@ function loadState() {
     s.students ||= {};
     s.materials ||= {};
     s.guests ||= {};
+    s.mailboxes ||= {};
     return s;
   } catch {
     return {
@@ -86,6 +87,7 @@ function loadState() {
       students: {},
       materials: {},
       guests: {},
+      mailboxes: {},
     };
   }
 }
@@ -183,7 +185,6 @@ function publicStudent(s) {
     id: s.id, courseId: s.courseId, name: s.name, seat: s.seat,
     joinedAt: s.joinedAt, lastSeen: s.lastSeen, reviewedAt: s.reviewedAt || 0,
     online: (online.get(s.id) || 0) > 0,
-    mailAlias: s.mailAlias || '',
     files: s.files.map(publicFile),
   };
 }
@@ -214,7 +215,7 @@ const guestByToken = (t) => {
   return g && g.expiresAt > Date.now() ? g : null;
 };
 const guestSees = (g, courseId) => !g.courseId || g.courseId === courseId;
-const guestStudent = (p) => ({ ...p, mailAlias: '' });
+const guestStudent = (p) => p;
 const GUEST_EVENTS = new Set(['student:update', 'student:remove', 'course:update', 'course:remove', 'material:update', 'material:remove', 'site:update', 'config:update']);
 const guestRooms = () => [...io.sockets.adapter.rooms.keys()].filter((r) => r.startsWith('guest:'));
 const toMasters = (event, payload) => {
@@ -232,6 +233,17 @@ io.use((socket, next) => {
   const { role, token } = socket.handshake.auth || {};
   if (role === 'master' && masterTokens.has(token)) {
     socket.data.role = 'master';
+    return next();
+  }
+  if (role === 'code' && isCodeAllToken(token)) {
+    socket.data.role = 'code';
+    socket.data.mailboxId = 'all';
+    return next();
+  }
+  const box = role === 'code' && mailboxByToken(token);
+  if (box) {
+    socket.data.role = 'code';
+    socket.data.mailboxId = box.id;
     return next();
   }
   const g = role === 'guest' && guestByToken(token);
@@ -254,6 +266,10 @@ io.use((socket, next) => {
 io.on('connection', (socket) => {
   if (socket.data.role === 'master') {
     socket.join('master');
+    return;
+  }
+  if (socket.data.role === 'code') {
+    socket.join(`mbox:${socket.data.mailboxId}`);
     return;
   }
   if (socket.data.role === 'guest') {
@@ -394,8 +410,6 @@ app.get('/api/student/me', requireStudent, (req, res) => {
     allowedExt: [...ALLOWED_EXT],
     canConvert,
     materials: materialsFor(req.student).map((m) => studentMaterial(m, req.student.id)),
-    inboxEnabled: !!state.inboxEnabled,
-    inbox: inboxFor(req.student),
   });
 });
 
@@ -640,7 +654,8 @@ app.get('/api/master/state', requireMaster, (req, res) => {
     maxFileMB: MAX_FILE_MB,
     inbox: inbox.map(publicInbox),
     guests: Object.values(state.guests).map(publicGuest),
-    inboxEnabled: !!state.inboxEnabled,
+    mailboxes: Object.values(state.mailboxes).map(publicMailbox),
+    codeAllToken: ensureCodeAllToken(),
     inboxKey: ensureInboxKey(),
     inboxTtlMin: INBOX_TTL_MIN,
     inboxImap: imapStatus,
@@ -718,6 +733,12 @@ app.post('/api/master/courses/:id/start', requireMaster, (req, res) => {
   c.open = true;
   c.sessionStartedAt = Date.now();
   c.sessionEndedAt = null;
+  for (const m of materialsOfCourse(c.id)) {
+    if (m.archived) continue;
+    notifyMaterialTargets(m, 'material:remove', () => ({ id: m.id })); // 보관 전에 대상 학생에게 알림
+    m.archived = true;
+    toMasters('material:update', publicMaterial(m));
+  }
   saveState();
   toMasters('course:update', publicCourse(c));
   toCourse(c.id, 'course:update', publicCourse(c));
@@ -810,13 +831,15 @@ app.delete('/api/master/students/:id/files/:fileId', requireMaster, async (req, 
 //   seen:   { studentId: 처음 연 시각 } — 교사 화면의 '확인' 표시
 // ---------------------------------------------------------------------------
 const materialsOfCourse = (courseId) => Object.values(state.materials).filter((m) => m.courseId === courseId);
-const canSeeMaterial = (m, s) => m.courseId === s.courseId && (m.target === 'all' || m.target.includes(s.id));
+// archived: 새 수업을 시작하면 지난 수업 자료는 학생 화면에서 내림 (교사 화면 '지난 수업 자료'에 보관, 다시 보내기 가능)
+const canSeeMaterial = (m, s) => !m.archived && m.courseId === s.courseId && (m.target === 'all' || m.target.includes(s.id));
 const materialsFor = (s) => Object.values(state.materials).filter((m) => canSeeMaterial(m, s)).sort((a, b) => b.createdAt - a.createdAt);
 
 function publicMaterial(m) {
   return {
     id: m.id, courseId: m.courseId, kind: m.kind || 'file', url: m.url || null, name: m.name, ext: m.ext,
     size: m.size, mime: m.mime, note: m.note, target: m.target, createdAt: m.createdAt, seen: m.seen,
+    archived: !!m.archived,
   };
 }
 function studentMaterial(m, studentId) {
@@ -952,6 +975,20 @@ app.delete('/api/master/materials/:id', requireMaster, async (req, res) => {
   res.json({ ok: true });
 });
 
+// 지난 수업 자료 다시 보내기: 학생 화면에 새 자료로 다시 나타남 (확인 기록 초기화)
+app.post('/api/master/materials/:id/restore', requireMaster, (req, res) => {
+  const m = state.materials[req.params.id];
+  if (!m) return res.status(404).json({ error: '자료를 찾을 수 없습니다.' });
+  m.archived = false;
+  m.createdAt = Date.now();
+  m.seen = {};
+  if (Array.isArray(m.target)) m.target = m.target.filter((id) => state.students[id]);
+  saveState();
+  toMasters('material:update', publicMaterial(m));
+  notifyMaterialTargets(m, 'material:new', (st) => studentMaterial(m, st.id));
+  res.json({ material: publicMaterial(m) });
+});
+
 // 자료 파일: 교사 또는 대상 학생만. 학생이 처음 열면 확인 시각 기록 (nt=1 은 썸네일용, 기록 안 함)
 function resolveMaterialAccess(req) {
   const m = state.materials[req.params.id];
@@ -1017,8 +1054,21 @@ const publicInbox = (m) => ({
   id: m.id, at: m.at, date: m.date, from: m.from, to: m.to, subject: m.subject, code: m.code, links: m.links, text: m.text,
 });
 const studentInbox = (m) => ({ id: m.id, at: m.at, subject: m.subject, code: m.code, links: m.links });
-const inboxFor = (s) => (state.inboxEnabled && s.mailAlias ? inbox.filter((m) => m.to.includes(s.mailAlias)).map(studentInbox) : []);
-const studentsWithAlias = (to) => Object.values(state.students).filter((s) => s.mailAlias && to.includes(s.mailAlias));
+
+// 계정별 '코드 확인 링크': 과목·좌석과 상관없이, 등록한 주소로 온 코드만 그 링크에서 보임
+//   mailboxes: { id: { id, address, label, token, createdAt } }
+const publicMailbox = (b) => ({ id: b.id, address: b.address, label: b.label, token: b.token, createdAt: b.createdAt });
+const mailboxByToken = (t) => (t ? Object.values(state.mailboxes).find((b) => b.token === t) : null);
+// 통합 링크: 등록한 모든 계정의 코드를 한 화면에 (프로젝터용). 교사가 만들고 다시 만들 수 있음
+const ensureCodeAllToken = () => { if (!state.codeAllToken) { state.codeAllToken = newToken(); saveState(); } return state.codeAllToken; };
+const isCodeAllToken = (t) => !!t && t === state.codeAllToken;
+const allMailboxInbox = () => {
+  const boxes = Object.values(state.mailboxes);
+  return inbox.map((m) => ({ m, b: boxes.find((x) => m.to.includes(x.address)) }))
+    .filter((x) => x.b).map(({ m, b }) => ({ ...studentInbox(m), label: b.label, address: b.address }));
+};
+const mailboxInbox = (b) => inbox.filter((m) => m.to.includes(b.address)).map(studentInbox);
+const pushMailboxes = () => toMasters('mailboxes:update', Object.values(state.mailboxes).map(publicMailbox));
 
 // 메일 본문에서 인증 코드(6자리)와 인증용 링크만 추림
 function parseInbound(b) {
@@ -1042,7 +1092,12 @@ function ingestInbound(raw) {
   inbox.unshift(m);
   inbox.length = Math.min(inbox.length, INBOX_MAX);
   toMasters('inbox:new', publicInbox(m));
-  if (state.inboxEnabled) for (const s of studentsWithAlias(m.to)) toStudent(s.id, 'inbox:new', studentInbox(m));
+  for (const b of Object.values(state.mailboxes)) {
+    if (!m.to.includes(b.address)) continue;
+    io.to(`mbox:${b.id}`).emit('inbox:new', studentInbox(m));
+    io.to('mbox:all').emit('inbox:new', { ...studentInbox(m), label: b.label, address: b.address });
+    break;
+  }
   return 'ok';
 }
 app.post('/api/inbox', (req, res) => {
@@ -1073,44 +1128,69 @@ setInterval(() => {
   io.emit('inbox:remove', { ids: gone }); // id 만 보내므로 전체에 알려도 됨
 }, 60000).unref();
 
-function sendMailState(s) {
-  pushStudent(s);
-  toStudent(s.id, 'mail:update', { mailAlias: s.mailAlias || '', inbox: inboxFor(s) });
-}
-function setAlias(s, raw, res) {
-  const alias = normEmail(raw);
-  if (alias && !isEmail(alias)) return res.status(400).json({ error: '메일 주소 형식이 올바르지 않습니다.' });
-  if (alias && Object.values(state.students).some((x) => x.id !== s.id && x.mailAlias === alias)) {
-    return res.status(409).json({ error: '이미 다른 학생이 등록한 메일입니다. 선생님께 확인해 주세요.' });
+// 계정 등록: 한 줄에 하나 "주소 이름" (이름은 선택). 이미 있는 주소는 이름만 갱신
+app.post('/api/master/mailboxes', requireMaster, (req, res) => {
+  const lines = String(req.body?.text ?? '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean).slice(0, 200);
+  const bad = [];
+  let added = 0;
+  for (const line of lines) {
+    const [first, ...rest] = line.split(/[\s,]+/);
+    const address = normEmail(first);
+    if (!isEmail(address)) { bad.push(first); continue; }
+    const label = cleanText(rest.join(' '), 40);
+    const old = Object.values(state.mailboxes).find((b) => b.address === address);
+    if (old) { if (label) old.label = label; continue; }
+    const b = { id: newId(), address, label: label || address.split('@')[0], token: newToken(), createdAt: Date.now() };
+    state.mailboxes[b.id] = b;
+    added++;
   }
-  s.mailAlias = alias || undefined;
   saveState();
-  sendMailState(s);
-  return res.json({ mailAlias: s.mailAlias || '', inbox: inboxFor(s) });
-}
-// 학생은 처음 한 번만 등록 (남의 주소로 바꿔 코드를 보는 일을 막기 위해 변경은 교사만)
-app.patch('/api/student/mail', requireStudent, (req, res) => {
-  if (req.student.mailAlias) return res.status(409).json({ error: '이미 등록했습니다. 바꾸려면 선생님께 요청하세요.' });
-  if (!normEmail(req.body?.mailAlias)) return res.status(400).json({ error: '메일 주소를 입력해 주세요.' });
-  setAlias(req.student, req.body.mailAlias, res);
+  pushMailboxes();
+  res.json({ added, bad, mailboxes: Object.values(state.mailboxes).map(publicMailbox) });
 });
-app.patch('/api/master/students/:id/mail', requireMaster, (req, res) => {
-  const s = state.students[req.params.id];
-  if (!s) return res.status(404).json({ error: '학생을 찾을 수 없습니다.' });
-  setAlias(s, req.body?.mailAlias, res);
-});
-app.patch('/api/master/inbox', requireMaster, (req, res) => {
-  state.inboxEnabled = !!req.body?.enabled;
+app.patch('/api/master/mailboxes/:id', requireMaster, (req, res) => {
+  const b = state.mailboxes[req.params.id];
+  if (!b) return res.status(404).json({ error: '계정을 찾을 수 없습니다.' });
+  if (req.body?.label !== undefined) b.label = cleanText(req.body.label, 40) || b.label;
+  if (req.body?.regen) {
+    b.token = newToken(); // 링크가 샜을 때: 예전 링크는 바로 무효
+    io.in(`mbox:${b.id}`).disconnectSockets(true);
+  }
   saveState();
-  toMasters('inbox:config', { inboxEnabled: state.inboxEnabled, inboxKey: ensureInboxKey() });
-  io.except('master').emit('inbox:config', { inboxEnabled: state.inboxEnabled }); // 학생용 (연결 키 없음)
-  for (const s of Object.values(state.students)) if (s.mailAlias) toStudent(s.id, 'mail:update', { mailAlias: s.mailAlias, inbox: inboxFor(s) });
+  pushMailboxes();
+  res.json({ mailbox: publicMailbox(b) });
+});
+app.delete('/api/master/mailboxes/:id', requireMaster, (req, res) => {
+  const b = state.mailboxes[req.params.id];
+  if (!b) return res.status(404).json({ error: '계정을 찾을 수 없습니다.' });
+  delete state.mailboxes[b.id];
+  io.in(`mbox:${b.id}`).disconnectSockets(true);
+  saveState();
+  pushMailboxes();
   res.json({ ok: true });
 });
+// 학생용 코드 확인 페이지 데이터 (/code/:token)
+app.post('/api/master/mailboxes/all-link/regen', requireMaster, (req, res) => {
+  state.codeAllToken = newToken();
+  io.in('mbox:all').disconnectSockets(true);
+  saveState();
+  toMasters('mailboxes:all', { codeAllToken: state.codeAllToken });
+  res.json({ codeAllToken: state.codeAllToken });
+});
+app.get('/api/code/:token', (req, res) => {
+  if (isCodeAllToken(req.params.token)) {
+    return res.json({ siteTitle: state.siteTitle, all: true, label: '전체 계정', address: `${Object.keys(state.mailboxes).length}개 계정`, ttlMin: INBOX_TTL_MIN, inbox: allMailboxInbox() });
+  }
+  const b = mailboxByToken(req.params.token);
+  if (!b) return res.status(404).json({ error: '링크가 올바르지 않거나 다시 만들어졌습니다. 선생님께 새 링크를 받아 주세요.' });
+  res.json({ siteTitle: state.siteTitle, label: b.label, address: b.address, ttlMin: INBOX_TTL_MIN, inbox: mailboxInbox(b) });
+});
+app.get('/code/:token', (req, res) => res.sendFile(path.join(__dirname, 'public', 'code.html')));
+
 app.post('/api/master/inbox/regen-key', requireMaster, (req, res) => {
   state.inboxKey = crypto.randomBytes(16).toString('hex');
   saveState();
-  toMasters('inbox:config', { inboxEnabled: !!state.inboxEnabled, inboxKey: state.inboxKey });
+  toMasters('inbox:config', { inboxKey: state.inboxKey });
   res.json({ inboxKey: state.inboxKey });
 });
 app.delete('/api/master/inbox/:id', requireMaster, (req, res) => {
