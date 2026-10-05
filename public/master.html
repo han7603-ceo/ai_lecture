@@ -39,6 +39,7 @@
       <div class="top-actions">
         <button class="btn primary" id="joinInfoBtn">📱 입장 안내 (QR)</button>
         <button class="btn" id="materialsBtn">📤 자료 보내기</button>
+        <button class="btn" id="inboxBtn">📬 인증 메일 <span class="badge danger hidden" id="inboxCount"></span></button>
         <button class="btn" id="zipAllBtn">🗜️ 전체 ZIP</button>
         <button class="btn" id="settingsBtn">⚙️ 설정</button>
         <button class="btn ghost" id="logoutBtn" title="로그아웃">⎋</button>
@@ -113,6 +114,7 @@
             <button class="btn sm" id="dSendMat">📤 자료 보내기</button>
             <button class="btn sm" id="dKick">🚪 학생 삭제</button>
           </div>
+          <button class="d-mail" id="dMail" title="인증 메일을 받을 가입 메일 지정"></button>
           <div id="dFiles"></div>
         </aside>
         <section class="detail-preview">
@@ -234,6 +236,35 @@
           <div id="matSentList"></div>
           <p class="muted empty-text" id="matSentEmpty">아직 보낸 자료가 없습니다.</p>
         </section>
+      </div>
+    </div>
+  </div>
+
+  <!-- 인증 메일 (Gmail Apps Script 연결) -->
+  <div class="modal-bg hidden" id="inboxModal">
+    <div class="modal inbox">
+      <div class="modal-head"><strong>📬 인증 메일</strong><span class="muted small" id="inboxTtl"></span><div class="spacer"></div><button class="icon-btn" data-close aria-label="닫기">✕</button></div>
+      <div class="modal-body">
+        <label class="inbox-toggle"><input type="checkbox" id="inboxEnabled"> 학생 화면에 <b>📨 인증 메일</b> 칸 보이기 <span class="muted small">(학생이 등록한 가입 메일로 온 코드만 그 학생에게 표시)</span></label>
+        <div id="inboxList" class="inbox-list"></div>
+        <p class="muted empty-text" id="inboxEmpty">아직 받은 메일이 없습니다. 아래 <b>연결 설정</b>을 먼저 해 주세요.</p>
+        <details class="inbox-setup" id="inboxSetup">
+          <summary>⚙️ 연결 설정 (Gmail → 이 사이트, 처음 한 번)</summary>
+          <ol class="inbox-steps">
+            <li><a href="https://script.google.com/home/projects/create" target="_blank" rel="noopener">script.google.com</a> 에서 <b>새 프로젝트</b>를 만듭니다. (인증 메일이 오는 Gmail 계정으로 로그인)</li>
+            <li>기존 코드를 지우고 아래 코드를 <b>붙여넣기</b> → 💾 저장.</li>
+            <li>위쪽 함수 목록에서 <b>setup</b> 을 고르고 <b>▶ 실행</b> → 권한 검토 → 계정 선택 → (확인되지 않은 앱 경고가 나오면) <b>고급 → 이동</b> → <b>허용</b>.</li>
+            <li>이제 1분마다 자동으로 확인합니다. 메일 도착 후 화면에 뜨기까지 1~2분 걸릴 수 있습니다.</li>
+          </ol>
+          <p class="muted small">가져올 메일 조건은 코드 맨 위 <code>QUERY</code>(Gmail 검색어)로 바꿀 수 있습니다. 이 사이트에는 조건에 맞는 메일만 전송되고, <span id="inboxTtl2"></span> 뒤 자동 삭제됩니다.</p>
+          <div class="inbox-code-head">
+            <span class="muted small">연결 키: <code id="inboxKey"></code></span>
+            <div class="spacer"></div>
+            <button class="btn sm ghost" id="inboxRegen">키 재발급</button>
+            <button class="btn sm primary" id="inboxCopy">코드 복사</button>
+          </div>
+          <textarea class="input inbox-code" id="inboxCode" readonly spellcheck="false"></textarea>
+        </details>
       </div>
     </div>
   </div>

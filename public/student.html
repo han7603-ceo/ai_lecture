@@ -57,6 +57,22 @@
         <div id="matList" class="done-list"></div>
       </section>
 
+      <section class="card section mail-section hidden" id="mailSection">
+        <div class="section-head">
+          <h2>📨 인증 메일</h2>
+          <span class="muted small" id="mailAliasText"></span>
+        </div>
+        <form class="mail-form hidden" id="mailForm" autocomplete="off">
+          <p class="muted small" style="margin:0 0 8px">선생님이 만들어 준 계정의 <b>가입 메일 주소</b>를 등록하면, 그 주소로 온 인증 코드가 여기에 표시됩니다. 한 번 등록하면 선생님만 바꿀 수 있으니 정확히 입력하세요.</p>
+          <div class="link-row">
+            <input class="input" id="mailInput" type="text" inputmode="email" placeholder="예) han7603+s01@gmail.com">
+            <button class="btn primary" type="submit">등록</button>
+          </div>
+        </form>
+        <div id="mailList" class="done-list"></div>
+        <p class="muted small hidden" id="mailEmpty">아직 받은 인증 메일이 없습니다. 로그인 후 1~2분 정도 기다려 주세요.</p>
+      </section>
+
       <section class="card section">
         <div class="section-head">
           <h2>과제 올리기</h2>
