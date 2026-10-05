@@ -9,7 +9,9 @@ const store = {
   set(k, v) { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch { /* 무시 */ } },
 };
 
-let token = store.get('lb_master');
+// 참관(게스트) 모드: /master?guest=링크토큰 — 읽기 전용, 로그인 정보는 저장하지 않음
+const GUEST = new URLSearchParams(location.search).get('guest');
+let token = GUEST || store.get('lb_master');
 let S = null; // 서버 상태
 const students = new Map(); // id -> student
 let courseId = store.get('lb_course');
@@ -37,6 +39,9 @@ const courseStudents = () => [...students.values()].filter((s) => s.courseId ===
 init();
 async function init() {
   api('/api/public/config').then((c) => { $('#loginSite').textContent = c.siteTitle; }).catch(() => {});
+  if (GUEST) {
+    try { await loadState(); return showDash(); } catch (e) { return guestExpired(e.message); }
+  }
   if (token) {
     try { await loadState(); return showDash(); } catch { token = null; store.set('lb_master', null); }
   }
@@ -55,14 +60,24 @@ $('#loginForm').addEventListener('submit', async (e) => {
   } catch (err) { $('#loginErr').textContent = err.message; }
 });
 $('#logoutBtn').addEventListener('click', async () => {
+  if (GUEST) { location.href = '/'; return; }
   if (!(await confirmDialog('로그아웃할까요?'))) return;
   api('/api/master/logout', { method: 'POST', headers: H() }).catch(() => {});
   store.set('lb_master', null);
   location.reload();
 });
 
+function guestExpired(msg) {
+  document.body.replaceChildren(h('main', { class: 'center-page' },
+    h('div', { class: 'card auth-card' },
+      h('div', { class: 'brand-mark' }, '👀'),
+      h('h1', {}, '참관 링크를 사용할 수 없습니다'),
+      h('p', { class: 'sub' }, msg || '링크가 만료되었거나 취소되었습니다.'),
+      h('p', { class: 'muted small' }, '수업 담당 선생님께 새 참관 링크를 요청하세요.'))));
+}
+
 async function loadState() {
-  S = await api('/api/master/state', { headers: H() });
+  S = await api(GUEST ? '/api/guest/state' : '/api/master/state', { headers: H() });
   students.clear();
   for (const s of S.students) students.set(s.id, s);
   if (!course()) courseId = S.courses[0]?.id || null;
@@ -71,6 +86,12 @@ async function loadState() {
 function showDash() {
   $('#dashView').classList.remove('hidden');
   $('#pwNotice').classList.toggle('hidden', !S.usingDefaultPassword);
+  if (GUEST) {
+    document.body.classList.add('guest');
+    $('#logoutBtn').textContent = '나가기';
+    $('#logoutBtn').title = '참관 종료';
+    renderGuestBar();
+  }
   renderAll();
   connectSocket();
   window.addEventListener('resize', onResize);
@@ -78,11 +99,16 @@ function showDash() {
 }
 
 function connectSocket() {
-  socket = io({ auth: { role: 'master', token } });
+  socket = io({ auth: { role: GUEST ? 'guest' : 'master', token } });
   socket.on('connect_error', async () => {
-    // 서버 재시작 등으로 로그인 토큰이 사라진 경우
-    try { await api('/api/master/state', { headers: H() }); } catch (e) { if (e.status === 401) { store.set('lb_master', null); location.reload(); } }
+    // 서버 재시작 등으로 로그인 토큰이 사라진 경우 / 참관 링크가 만료·취소된 경우
+    try { await api(GUEST ? '/api/guest/state' : '/api/master/state', { headers: H() }); } catch (e) {
+      if (e.status !== 401) return;
+      if (GUEST) { socket.close(); return guestExpired(e.message); }
+      store.set('lb_master', null); location.reload();
+    }
   });
+  socket.on('disconnect', (reason) => { if (GUEST && reason === 'io server disconnect') guestExpired(); });
   socket.on('connect', async () => { await loadState(); renderAll(); });
   socket.on('student:update', (s) => {
     const prev = students.get(s.id);
@@ -123,6 +149,7 @@ function connectSocket() {
     toast(`📬 인증 메일 도착${who ? ` — ${who.seat}번 ${who.name}` : ''}${m.code ? ` · ${m.code}` : ''}`, 'ok', 5000);
     renderInbox();
   });
+  socket.on('guests:update', (list) => { S.guests = list; renderGuests(); });
   socket.on('inbox:remove', ({ ids }) => { S.inbox = S.inbox.filter((m) => !ids.includes(m.id)); renderInbox(); });
   socket.on('inbox:config', ({ inboxEnabled, inboxKey }) => {
     S.inboxEnabled = inboxEnabled;
@@ -415,6 +442,7 @@ function openDetail(id) {
 }
 // 교사가 확인함 → 좌석 박스의 NEW 표시 해제 (다른 교사 화면에도 반영)
 function markReviewed(s) {
+  if (GUEST) return; // 참관자는 확인 처리하지 않음
   api(`/api/master/students/${s.id}/reviewed`, { method: 'POST', headers: H() }).catch(() => {});
 }
 function closeDetail() {
@@ -482,7 +510,7 @@ function renderDetail() {
     f.kind === 'link'
       ? h('a', { class: 'icon-btn', href: f.url, target: '_blank', rel: 'noopener', title: '링크 열기', onclick: (e) => e.stopPropagation() }, '↗️')
       : h('a', { class: 'icon-btn', href: fileUrl(f, true), title: '다운로드', onclick: (e) => e.stopPropagation() }, '⬇️'),
-    h('button', { class: 'icon-btn', title: '파일 삭제', onclick: (e) => { e.stopPropagation(); deleteFile(s, f); } }, '🗑️')));
+    h('button', { class: 'icon-btn master-only', title: '파일 삭제', onclick: (e) => { e.stopPropagation(); deleteFile(s, f); } }, '🗑️')));
   }
   updateDualBtn();
 }
@@ -737,6 +765,7 @@ function openSettings() {
   for (const o of opts) sel.append(h('option', { value: o, selected: o === cur }, o));
   sel.append(h('option', { value: '__custom' }, '직접 입력…'));
   $('#sInfo').textContent = `파일당 최대 ${S.maxFileMB}MB · 문서 PDF 변환: ${S.canConvert ? '사용 가능 (LibreOffice)' : '미설치 — 브라우저 간이 미리보기 사용'}`;
+  renderGuests();
   $('#settingsModal').classList.remove('hidden');
 }
 $('#settingsBtn').addEventListener('click', openSettings);
@@ -1116,4 +1145,47 @@ $('#dMail').addEventListener('click', async () => {
   const v = await promptDialog(`${s.name} 학생의 가입 메일\n(이 주소로 온 인증 메일이 학생 화면에 표시됩니다. 비우면 해제)`, s.mailAlias || '', { ok: '저장', placeholder: 'han7603+s01@gmail.com' });
   if (v == null) return;
   try { await api(`/api/master/students/${s.id}/mail`, { method: 'PATCH', body: { mailAlias: v }, headers: H() }); toast('저장했습니다.', 'ok'); } catch (e) { toast(e.message, 'error'); }
+});
+
+// ------------------------------------------------------------ 참관(게스트) 링크
+function renderGuestBar() {
+  const g = S.guest;
+  const scope = g.courseId ? (S.courses[0]?.name || '') : '모든 과목';
+  $('#guestBar').textContent = `👀 참관 모드 · ${g.label} · ${scope} · 읽기 전용 · ${new Date(g.expiresAt).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' })}까지`;
+  $('#guestBar').classList.remove('hidden');
+}
+const guestLink = (g) => `${baseUrl()}/master?guest=${g.token}`; // QR 과 같은 접속 주소
+function renderGuests() {
+  if (GUEST || !S.guests) return;
+  const c = course();
+  $('#gScope').replaceChildren(
+    ...(c ? [h('option', { value: c.id }, `현재 과목만 (${c.name})`)] : []),
+    h('option', { value: '' }, '모든 과목'));
+  const list = [...S.guests].sort((a, b) => b.createdAt - a.createdAt);
+  $('#gList').replaceChildren(...(list.length ? list.map((g) => {
+    const cname = g.courseId ? (S.courses.find((x) => x.id === g.courseId)?.name || '삭제된 과목') : '모든 과목';
+    const until = new Date(g.expiresAt).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    return h('div', { class: 'guest-item' },
+      h('div', { class: 'guest-info' },
+        h('div', { class: 'guest-name' }, g.label),
+        h('div', { class: 'muted small' }, `${cname} · ${until}까지`)),
+      h('button', { class: 'btn sm primary', onclick: () => copyText(guestLink(g), '참관 링크를 복사했습니다. 메신저로 보내 주세요.') }, '링크 복사'),
+      h('button', { class: 'btn sm ghost', onclick: () => cancelGuest(g) }, '취소'));
+  }) : [h('p', { class: 'muted small' }, '만든 참관 링크가 없습니다.')]));
+}
+async function cancelGuest(g) {
+  if (!(await confirmDialog(`'${g.label}' 참관 링크를 취소할까요?\n지금 보고 있는 화면도 바로 닫힙니다.`, { ok: '취소하기', danger: true }))) return;
+  try { await api(`/api/master/guests/${g.id}`, { method: 'DELETE', headers: H() }); toast('취소했습니다.'); } catch (e) { toast(e.message, 'error'); }
+}
+$('#gCreate').addEventListener('click', async () => {
+  try {
+    const r = await api('/api/master/guests', {
+      method: 'POST', headers: H(),
+      body: { label: $('#gLabel').value, courseId: $('#gScope').value || null, hours: Number($('#gHours').value) },
+    });
+    $('#gLabel').value = '';
+    if (!S.guests.some((x) => x.id === r.guest.id)) S.guests.push(r.guest);
+    renderGuests();
+    copyText(guestLink(r.guest), '참관 링크를 만들고 복사했습니다. 메신저로 보내 주세요.');
+  } catch (e) { toast(e.message, 'error'); }
 });

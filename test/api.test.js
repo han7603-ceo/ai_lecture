@@ -320,6 +320,51 @@ test('인증 메일 연결: 키 검사, 코드 추출, 학생 매칭, 등록 제
   assert.equal((await post(mail('m3', 'a@b.com', '111111'), inboxKey)).status, 200);
 });
 
+test('참관(게스트) 링크: 읽기 전용, 과목 범위, 민감 정보 제외, 취소', async () => {
+  const { data: { token } } = await call('POST', '/api/master/login', { body: { password: 'test-pw' } });
+  const c1 = (await call('POST', '/api/master/courses', { token, body: { name: '참관반', maxStudents: 5 } })).data.course;
+  const c2 = (await call('POST', '/api/master/courses', { token, body: { name: '다른반', maxStudents: 5 } })).data.course;
+  const a = (await call('POST', '/api/join', { body: { code: c1.code, name: '가' } })).data;
+  const b = (await call('POST', '/api/join', { body: { code: c2.code, name: '나' } })).data;
+  const form = new FormData(); form.append('files', new Blob(['HELLO']), 'a.txt');
+  const fa = (await call('POST', '/api/student/upload', { student: a.token, body: form })).data.student.files[0];
+  const form2 = new FormData(); form2.append('files', new Blob(['OTHER']), 'b.txt');
+  const fb = (await call('POST', '/api/student/upload', { student: b.token, body: form2 })).data.student.files[0];
+  await call('PATCH', '/api/student/mail', { student: a.token, body: { mailAlias: 'guest-test+1@gmail.com' } });
+
+  const g = (await call('POST', '/api/master/guests', { token, body: { label: '김 선생님', courseId: c1.id, hours: 2 } })).data.guest;
+  assert.match(g.token, /^[0-9a-f]{48}$/);
+  assert.ok(g.expiresAt - Date.now() > 1.9 * 3600000);
+
+  const st = await call('GET', '/api/guest/state', { token: g.token });
+  assert.equal(st.status, 200);
+  assert.deepEqual(st.data.courses.map((c) => c.name), ['참관반'], '허락한 과목만');
+  assert.deepEqual(st.data.students.map((s) => s.name), ['가']);
+  assert.equal(st.data.students[0].mailAlias, '', '가입 메일 숨김');
+  for (const k of ['inbox', 'inboxKey', 'guests']) assert.equal(st.data[k], undefined, k);
+
+  // 파일: 허락한 과목만 열람
+  assert.equal((await call('GET', `/files/${fa.id}?t=${g.token}`)).data.toString(), 'HELLO');
+  assert.equal((await call('GET', `/files/${fb.id}?t=${g.token}`)).status, 404);
+  // 교사 기능은 전부 거부
+  assert.equal((await call('GET', '/api/master/state', { token: g.token })).status, 401);
+  assert.equal((await call('DELETE', `/api/master/students/${a.studentId}/files/${fa.id}`, { token: g.token })).status, 401);
+  assert.equal((await call('POST', `/api/master/courses/${c1.id}/end`, { token: g.token })).status, 401);
+  assert.equal((await call('GET', `/api/master/courses/${c1.id}/zip?t=${g.token}`)).status, 401);
+  assert.equal((await call('POST', '/api/master/guests', { token: g.token, body: {} })).status, 401);
+
+  // 전체 과목 링크
+  const gAll = (await call('POST', '/api/master/guests', { token, body: { label: '교감', hours: 1 } })).data.guest;
+  assert.equal((await call('GET', '/api/guest/state', { token: gAll.token })).data.courses.length >= 2, true);
+  assert.equal((await call('GET', '/api/master/state', { token })).data.guests.length >= 2, true);
+
+  // 취소하면 즉시 막힘
+  assert.equal((await call('DELETE', `/api/master/guests/${g.id}`, { token })).status, 200);
+  assert.equal((await call('GET', '/api/guest/state', { token: g.token })).status, 401);
+  assert.equal((await call('GET', `/files/${fa.id}?t=${g.token}`)).status, 404);
+  assert.equal((await call('GET', '/api/guest/state', { token: 'nope' })).status, 401);
+});
+
 // 로그인 차단 테스트는 이 IP 를 15분간 막으므로 항상 마지막에 둔다
 test('로그인 실패가 반복되면 차단', async () => {
   let last;
