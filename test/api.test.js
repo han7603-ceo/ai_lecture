@@ -221,6 +221,53 @@ test('링크(URL) 보내기: 주소 검사, 확인 기록 후 이동, 회수', a
   assert.equal((await go(yt.id, a.token)).status, 404);
 });
 
+test('학생 링크 제출: 주소 검사, 교사 조회, 이동, ZIP·CSV, 삭제, 마감', async () => {
+  const { data: { token } } = await call('POST', '/api/master/login', { body: { password: 'test-pw' } });
+  const { data: { course } } = await call('POST', '/api/master/courses', { token, body: { name: '링크제출반', maxStudents: 5 } });
+  const a = (await call('POST', '/api/join', { body: { code: course.code, name: '가' } })).data;
+  const other = (await call('POST', '/api/join', { body: { code: course.code, name: '나' } })).data;
+  const submit = (body, t = a.token) => call('POST', '/api/student/links', { student: t, body });
+
+  assert.equal((await submit({ url: 'javascript:alert(1)' })).status, 400);
+  assert.equal((await submit({ url: '' })).status, 400);
+  assert.equal((await submit({ url: 'https://x.com' }, 'bad-token')).status, 401);
+
+  const r = await submit({ url: 'docs.google.com/document/d/abc/edit', title: '조별 보고서' });
+  assert.equal(r.status, 200);
+  const link = r.data.student.files.find((f) => f.kind === 'link');
+  assert.equal(link.url, 'https://docs.google.com/document/d/abc/edit');
+  assert.equal(link.name, '조별 보고서');
+  assert.equal(link.ext, 'link');
+  const yt = (await submit({ url: 'https://www.youtube.com/watch?v=1' })).data.student.files.at(-1);
+  assert.equal(yt.name, 'youtube.com/watch');
+
+  // 교사 대시보드에 보이고, 교사·본인만 열 수 있음 (원래 주소로 이동)
+  const st = (await call('GET', '/api/master/state', { token })).data;
+  assert.equal(st.students.find((x) => x.id === a.studentId).files.filter((f) => f.kind === 'link').length, 2);
+  const go = (t) => fetch(`${BASE}/files/${link.id}?t=${t}`, { redirect: 'manual' });
+  assert.equal((await go(token)).headers.get('location'), link.url);
+  assert.equal((await go(a.token)).status, 302);
+  assert.equal((await go(other.token)).status, 404);
+
+  // ZIP: 학생 폴더에 링크.txt, 제출현황.csv 에 주소 (압축 레벨 1이라 본문을 그대로 찾기 어려워 파일 이름과 CSV 만 확인)
+  const zip = await call('GET', `/api/master/courses/${course.id}/zip?t=${token}`);
+  assert.equal(zip.status, 200);
+  const JSZip = require('jszip');
+  const z = await JSZip.loadAsync(zip.data);
+  const names = Object.keys(z.files);
+  assert.ok(names.some((n) => n.endsWith('/링크.txt')), names.join(','));
+  const txt = await z.file(names.find((n) => n.endsWith('/링크.txt'))).async('string');
+  assert.ok(txt.includes('조별 보고서') && txt.includes(link.url));
+  const csv = await z.file(names.find((n) => n.endsWith('제출현황.csv'))).async('string');
+  assert.ok(csv.includes(`조별 보고서 (${link.url})`));
+
+  // 삭제 (저장 파일 없음)
+  assert.equal((await call('DELETE', `/api/student/files/${yt.id}`, { student: a.token })).status, 200);
+  // 마감되면 제출 불가
+  await call('POST', `/api/master/courses/${course.id}/end`, { token });
+  assert.equal((await submit({ url: 'https://example.com' })).status, 403);
+});
+
 // 로그인 차단 테스트는 이 IP 를 15분간 막으므로 항상 마지막에 둔다
 test('로그인 실패가 반복되면 차단', async () => {
   let last;

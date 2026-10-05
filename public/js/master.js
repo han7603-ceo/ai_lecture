@@ -463,8 +463,10 @@ function renderDetail() {
     h('div', { class: 'dthumb' }, thumb),
     h('div', { class: 'dinfo' },
       h('div', { class: 'dname', title: f.name }, f.uploadedAt > detailSince ? h('span', { class: 'new-tag' }, 'NEW') : null, f.name),
-      h('div', { class: 'dsub' }, `${formatBytes(f.size)} · ${clock(f.uploadedAt)}`)),
-    h('a', { class: 'icon-btn', href: fileUrl(f, true), title: '다운로드', onclick: (e) => e.stopPropagation() }, '⬇️'),
+      h('div', { class: 'dsub' }, `${f.kind === 'link' ? hostOf(f.url) : formatBytes(f.size)} · ${clock(f.uploadedAt)}`)),
+    f.kind === 'link'
+      ? h('a', { class: 'icon-btn', href: f.url, target: '_blank', rel: 'noopener', title: '링크 열기', onclick: (e) => e.stopPropagation() }, '↗️')
+      : h('a', { class: 'icon-btn', href: fileUrl(f, true), title: '다운로드', onclick: (e) => e.stopPropagation() }, '⬇️'),
     h('button', { class: 'icon-btn', title: '파일 삭제', onclick: (e) => { e.stopPropagation(); deleteFile(s, f); } }, '🗑️')));
   }
   updateDualBtn();
@@ -484,6 +486,7 @@ function showFile(s, f, fromClick = false) {
     return;
   }
   $('#dpName').textContent = f.name;
+  if (f.kind === 'link') return showLink(s, f, fromClick);
   $('#dpDownload').href = fileUrl(f, true);
   $('#dpOpen').href = fileUrl(f);
   const src = {
@@ -504,6 +507,47 @@ function showFile(s, f, fromClick = false) {
     return;
   }
   renderPreview(box, src);
+}
+
+// 링크 제출: 미리보기 대신 카드 표시. 직접 누르면 열기 (듀얼 모니터면 다른 모니터에)
+function showLink(s, f, fromClick) {
+  const box = $('#dpBox');
+  box._token = null;
+  box.querySelectorAll('video, audio').forEach((m) => m.pause());
+  box.className = 'preview';
+  $('#dpDownload').classList.add('hidden');
+  $('#dpOpen').href = f.url;
+  let host = f.url;
+  try { host = new URL(f.url).hostname.replace(/^www\./, ''); } catch { /* 그대로 */ }
+  box.replaceChildren(h('div', { class: 'pv-empty link-card' },
+    h('div', { class: 'pv-empty-icon' }, '🔗'),
+    h('div', { class: 'pv-empty-name' }, f.name),
+    h('a', { class: 'link-url', href: f.url, target: '_blank', rel: 'noopener' }, f.url),
+    h('p', { class: 'muted' }, `${host} · ${clock(f.uploadedAt)} 제출`),
+    h('button', { class: 'btn primary', onclick: () => openLink(f.url, true) }, '링크 열기 ↗')));
+  if (viewerOpen()) showInViewer({ student: `${s.seat}번 ${s.name}`, name: f.name, link: f.url });
+  if (fromClick) openLink(f.url, false);
+}
+// 듀얼 모니터면 다른 모니터에 새 창으로, 아니면 새 탭으로 연다.
+// 외부 사이트가 대시보드를 조작하지 못하도록 opener 를 끊는다 (빈 창을 먼저 열고 opener=null 후 이동).
+// 끊은 창은 브라우저 규칙상 대시보드가 다시 이동·닫기할 수 없으므로 링크마다 새 창이 열린다.
+async function openLink(url, explicit) {
+  if (useViewer()) {
+    try {
+      const features = await otherScreenFeatures();
+      if (features) {
+        const linkWin = window.open('about:blank', '_blank', features);
+        if (linkWin) {
+          linkWin.opener = null;
+          linkWin.location.replace(url);
+          return;
+        }
+      }
+    } catch { /* 권한 없음 → 새 탭 */ }
+  } else if (!explicit) {
+    return; // 모니터 1대: 목록에서 고르면 카드만 보여 주고, '링크 열기'를 눌러야 연다
+  }
+  window.open(url, '_blank', 'noopener');
 }
 
 // ------------------------------------------------------------ 듀얼 모니터: 제출 파일을 다른 모니터 창에

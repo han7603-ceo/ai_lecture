@@ -171,7 +171,7 @@ const masterTokens = new Set();
 
 function publicFile(f) {
   return {
-    id: f.id, name: f.name, ext: f.ext, size: f.size, mime: f.mime,
+    id: f.id, kind: f.kind || 'file', url: f.url || null, name: f.name, ext: f.ext, size: f.size, mime: f.mime,
     uploadedAt: f.uploadedAt,
   };
 }
@@ -428,10 +428,26 @@ app.post('/api/student/upload', requireStudent, (req, res) => {
   });
 });
 
+// 링크 제출: 파일 대신 주소만 저장 (ext 'link' 로 두면 화면에서 🔗 아이콘으로 표시됨)
+app.post('/api/student/links', requireStudent, (req, res) => {
+  if (req.course.open === false) return res.status(403).json({ error: '제출이 마감되었습니다.' });
+  const url = normalizeUrl(req.body?.url);
+  if (!url) return res.status(400).json({ error: '올바른 인터넷 주소가 아닙니다. (예: https://docs.google.com/…)' });
+  const s = req.student;
+  s.files.push({
+    id: newId(), kind: 'link', url, name: linkTitle(url, req.body?.title), ext: 'link', size: 0,
+    mime: '', stored: null, uploadedAt: Date.now(),
+  });
+  saveState();
+  pushStudent(s);
+  res.json({ student: publicStudent(s) });
+});
+
 async function removeFileRecord(s, fileId) {
   const idx = s.files.findIndex((f) => f.id === fileId);
   if (idx < 0) return false;
   const [f] = s.files.splice(idx, 1);
+  if (!f.stored) return true; // 링크
   const abs = path.join(UPLOAD_DIR, f.stored);
   await fsp.rm(abs, { force: true });
   await fsp.rm(abs + '.pdf', { force: true });
@@ -461,6 +477,7 @@ function resolveFileAccess(req) {
 app.get('/files/:fileId', (req, res) => {
   const a = resolveFileAccess(req);
   if (!a) return res.status(404).send('파일을 찾을 수 없습니다.');
+  if (a.file.kind === 'link') return res.redirect(302, a.file.url);
   const abs = path.join(UPLOAD_DIR, a.file.stored);
   if (req.query.download) return res.download(abs, a.file.name);
   res.sendFile(abs, { headers: { 'Content-Type': a.file.mime || 'application/octet-stream' } });
@@ -792,11 +809,15 @@ function parseLinks(raw) {
   return list.slice(0, MAX_FILES_PER_UPLOAD).map((x) => {
     const url = normalizeUrl(x?.url);
     if (!url) throw Object.assign(new Error(`올바른 인터넷 주소가 아닙니다: ${String(x?.url ?? '').slice(0, 80)}`), { status: 400 });
-    const u = new URL(url);
-    let fallback = u.hostname.replace(/^www\./, '') + (u.pathname === '/' ? '' : u.pathname);
-    try { fallback = decodeURI(fallback); } catch { /* 그대로 사용 */ }
-    return { url, title: cleanText(x?.title, 100) || fallback.slice(0, 100) };
+    return { url, title: linkTitle(url, x?.title) };
   });
+}
+// 제목이 없으면 도메인+경로로 대신 (예: youtube.com/watch)
+function linkTitle(url, title) {
+  const u = new URL(url);
+  let fallback = u.hostname.replace(/^www\./, '') + (u.pathname === '/' ? '' : u.pathname);
+  try { fallback = decodeURI(fallback); } catch { /* 그대로 사용 */ }
+  return cleanText(title, 100) || fallback.slice(0, 100);
 }
 
 const materialUpload = multer({
@@ -933,7 +954,14 @@ function studentFolder(s) {
 }
 function appendStudentFiles(archive, s, prefix) {
   const used = new Set();
+  const links = s.files.filter((f) => f.kind === 'link');
+  if (links.length) {
+    const text = links.map((f) => `${f.name}\r\n${f.url}\r\n`).join('\r\n');
+    archive.append('\ufeff' + text, { name: `${prefix}링크.txt` });
+    used.add('링크.txt');
+  }
   for (const f of s.files) {
+    if (f.kind === 'link') continue;
     let name = safeFsName(f.name);
     const base = name.replace(/(\.[^.]*)?$/, '');
     const ext = name.slice(base.length);
@@ -968,7 +996,7 @@ app.get('/api/master/courses/:id/zip', requireMaster, (req, res) => {
       if (s.files.length) appendStudentFiles(archive, s, `${courseName}/${studentFolder(s)}/`);
     }
     const summary = ['자리,이름,제출 파일 수,파일 목록']
-      .concat(list.map((s) => [s.seat, s.name, s.files.length, s.files.map((f) => f.name).join(' | ')]
+      .concat(list.map((s) => [s.seat, s.name, s.files.length, s.files.map((f) => (f.kind === 'link' ? `${f.name} (${f.url})` : f.name)).join(' | ')]
         .map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',')))
       .join('\r\n');
     archive.append('﻿' + summary, { name: `${courseName}/제출현황.csv` });

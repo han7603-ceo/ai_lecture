@@ -110,7 +110,29 @@ function renderHeader() {
   $('#closedNotice').classList.toggle('hidden', !closed);
   $('#dropzone').classList.toggle('disabled', closed);
   $('#uploadBtn').disabled = closed || uploading;
+  $('#linkBtn').disabled = closed;
 }
+
+// ------------------------------------------------------------ 링크 제출 (미리보기 단계 없이 바로 제출)
+$('#linkForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (!me.course.open) return toast('제출이 마감되었습니다.', 'error');
+  const url = $('#linkUrl').value.trim();
+  if (!url) return $('#linkUrl').focus();
+  $('#linkBtn').disabled = true;
+  try {
+    const r = await api('/api/student/links', { method: 'POST', body: { url, title: $('#linkTitle').value }, headers: authHeaders() });
+    me.student = r.student;
+    $('#linkUrl').value = '';
+    $('#linkTitle').value = '';
+    renderDone();
+    toast('링크를 제출했습니다! ✅', 'ok');
+  } catch (err) {
+    toast(err.message, 'error', 4000);
+  } finally {
+    $('#linkBtn').disabled = !me.course.open;
+  }
+});
 
 $('#meChip').addEventListener('click', async () => {
   const name = await promptDialog('이름 변경', me.student.name);
@@ -297,6 +319,7 @@ function renderDone() {
   $('#doneCount').textContent = files.length;
   $('#doneEmpty').classList.toggle('hidden', files.length > 0);
   for (const f of files) {
+    if (f.kind === 'link') { list.append(doneLinkItem(f)); continue; }
     const open = () => openPreview({ name: f.name, ext: f.ext, url: fileUrl(f), size: f.size, download: fileUrl(f, true) });
     list.append(h('div', { class: 'done-item' },
       h('div', { class: 'dthumb', onclick: open }, mediaThumb(f.ext, fileUrl(f))),
@@ -309,8 +332,22 @@ function renderDone() {
   }
 }
 
+function doneLinkItem(f) {
+  let host = f.url;
+  try { host = new URL(f.url).hostname.replace(/^www\./, ''); } catch { /* 그대로 */ }
+  const a = (cls, ...kids) => h('a', { class: cls, href: f.url, target: '_blank', rel: 'noopener' }, ...kids);
+  return h('div', { class: 'done-item link-item' },
+    a('dthumb', '🔗'),
+    a('dinfo',
+      h('div', { class: 'dname', title: f.url }, f.name),
+      h('div', { class: 'dsub' }, `${host} · ${timeAgo(f.uploadedAt)} 제출`)),
+    h('div', { class: 'dact' },
+      a('icon-btn', '↗️'),
+      h('button', { class: 'icon-btn', title: '삭제', onclick: () => removeFile(f) }, '🗑️')));
+}
+
 async function removeFile(f) {
-  if (!(await confirmDialog(`'${f.name}' 파일을 삭제할까요?\n선생님 화면에서도 사라집니다.`, { ok: '삭제', danger: true }))) return;
+  if (!(await confirmDialog(`'${f.name}' ${f.kind === 'link' ? '링크를' : '파일을'} 삭제할까요?\n선생님 화면에서도 사라집니다.`, { ok: '삭제', danger: true }))) return;
   try {
     const r = await api(`/api/student/files/${f.id}`, { method: 'DELETE', headers: authHeaders() });
     me.student = r.student;

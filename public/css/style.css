@@ -182,3 +182,6 @@ label.field > span { display: block; font-size: 13px; color: var(--muted); margi
 .pv-cover figcaption { font-size: 12px; color: var(--muted); margin-top: 4px; }
 .pv-doc-text { background: var(--panel-2); border-radius: 8px; padding: 16px 20px; max-height: 60vh; overflow: auto; }
 .pv-doc-text p { margin: 0 0 6px; }
+
+/* 링크 제출 카드 */
+.link-card .link-url { word-break: break-all; max-width: 640px; text-align: center; }

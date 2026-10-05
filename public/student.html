@@ -75,6 +75,15 @@
           <label class="btn"><input type="file" accept="audio/*" capture hidden id="audioInput">🎙️ 녹음</label>
         </div>
 
+        <form class="link-submit" id="linkForm" autocomplete="off">
+          <span class="link-label">🔗 링크 제출 <span class="muted small">구글 문서·유튜브·캔바·패들렛 등 결과물 주소</span></span>
+          <div class="link-row">
+            <input class="input" id="linkUrl" type="text" inputmode="url" placeholder="https://…">
+            <input class="input" id="linkTitle" maxlength="100" placeholder="제목 (선택)">
+            <button class="btn primary" id="linkBtn" type="submit">링크 제출</button>
+          </div>
+        </form>
+
         <div id="pendingWrap" class="hidden">
           <h3 class="sub-title">업로드 대기 중 <span class="badge warn" id="pendingCount">0</span></h3>
           <p class="muted small" style="margin-top:-6px">카드를 눌러 미리보기로 확인한 뒤 <b>최종 업로드</b>를 눌러야 제출됩니다.</p>

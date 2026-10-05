@@ -84,6 +84,7 @@ const KIND = {
   hwp: ['hwp', 'hwpx'],
   text: ['txt'],
   zip: ['zip'],
+  link: ['link'], // 링크 제출
 };
 export function extOf(name) {
   const m = /\.([^.]+)$/.exec(String(name));
@@ -95,7 +96,7 @@ export function kindOf(ext) {
 }
 const ICON = {
   image: '🖼️', video: '🎬', audio: '🎵', pdf: '📕', word: '📘', slide: '📙',
-  sheet: '📗', hwp: '📄', text: '📝', zip: '🗜️', file: '📎',
+  sheet: '📗', hwp: '📄', text: '📝', zip: '🗜️', link: '🔗', file: '📎',
 };
 export const iconOf = (ext) => ICON[kindOf(ext)];
 
