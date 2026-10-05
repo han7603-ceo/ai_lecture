@@ -16,6 +16,7 @@ const { pathToFileURL } = require('url');
 
 const express = require('express');
 const multer = require('multer');
+const { startImapInbox } = require('./inbox-imap');
 const archiver = require('archiver');
 const QRCode = require('qrcode');
 const { Server } = require('socket.io');
@@ -642,6 +643,7 @@ app.get('/api/master/state', requireMaster, (req, res) => {
     inboxEnabled: !!state.inboxEnabled,
     inboxKey: ensureInboxKey(),
     inboxTtlMin: INBOX_TTL_MIN,
+    inboxImap: imapStatus,
   });
 });
 
@@ -1032,16 +1034,35 @@ function parseInbound(b) {
   return { id, at, date: Number(b.date) || at, from: cleanText(b.from, 200), to, subject, code, links, text };
 }
 
-app.post('/api/inbox', (req, res) => {
-  if (!inboxKeyOk(req.get('x-inbox-key'))) return res.status(401).json({ error: '연결 키가 올바르지 않습니다.' });
-  const m = parseInbound(req.body);
-  if (!m) return res.status(400).json({ error: '메일 형식이 올바르지 않습니다.' });
-  if (inbox.some((x) => x.id === m.id)) return res.json({ ok: true, duplicate: true });
+// Apps Script(POST /api/inbox) 와 IMAP(서버가 직접 확인) 두 경로 모두 여기로 들어옴
+function ingestInbound(raw) {
+  const m = parseInbound(raw);
+  if (!m) return 'invalid';
+  if (inbox.some((x) => x.id === m.id)) return 'duplicate';
   inbox.unshift(m);
   inbox.length = Math.min(inbox.length, INBOX_MAX);
   toMasters('inbox:new', publicInbox(m));
   if (state.inboxEnabled) for (const s of studentsWithAlias(m.to)) toStudent(s.id, 'inbox:new', studentInbox(m));
-  res.json({ ok: true });
+  return 'ok';
+}
+app.post('/api/inbox', (req, res) => {
+  if (!inboxKeyOk(req.get('x-inbox-key'))) return res.status(401).json({ error: '연결 키가 올바르지 않습니다.' });
+  const r = ingestInbound(req.body);
+  if (r === 'invalid') return res.status(400).json({ error: '메일 형식이 올바르지 않습니다.' });
+  res.json({ ok: true, duplicate: r === 'duplicate' });
+});
+
+// IMAP: 환경 변수 INBOX_IMAP_USER / INBOX_IMAP_PASSWORD 가 있으면 서버가 메일함을 30초마다 확인
+let imapStatus = { configured: false };
+startImapInbox({
+  maxAgeMs: INBOX_TTL_MIN * 60000,
+  onMessage: (raw) => ingestInbound(raw),
+  onStatus: (st) => {
+    const changed = st.ok !== imapStatus.ok || st.error !== imapStatus.error;
+    imapStatus = st;
+    if (changed) toMasters('inbox:imap', imapStatus);
+    if (changed && st.configured) console.log(st.ok ? `    인증 메일(IMAP): ${st.user} 연결됨` : `    인증 메일(IMAP): ${st.error}`);
+  },
 });
 
 setInterval(() => {
