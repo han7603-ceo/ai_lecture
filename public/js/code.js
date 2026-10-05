@@ -5,15 +5,23 @@ const token = location.pathname.split('/').pop();
 let data = null;
 let freshId = null;
 
+// 항상 최신 코드만: 개인 링크는 1개, 통합 링크는 계정마다 1개 (메일 받은 시각 기준)
+const newest = (a, b) => (b.date || b.at) - (a.date || a.at);
+function latest() {
+  const sorted = [...data.inbox].sort(newest);
+  if (!data.all) return sorted.slice(0, 1);
+  const seen = new Set();
+  return sorted.filter((m) => !seen.has(m.address) && seen.add(m.address));
+}
 function render() {
-  const list = data.inbox;
+  const list = latest();
   $('#cEmpty').classList.toggle('hidden', list.length > 0);
-  $('#cHint').textContent = list.length ? `코드는 ${data.ttlMin}분 동안 표시되고 사라집니다. 가장 위가 최신입니다.` : '';
-  $('#cList').replaceChildren(...list.map((m, i) => h('div', { class: `card code-card ${m.id === freshId ? 'fresh' : ''}` },
-    data.all ? h('div', { class: 'code-who' }, `🔑 ${m.label}`, h('div', { class: 'muted small' }, m.address)) : null,
+  $('#cHint').textContent = list.length ? `${data.all ? '계정마다 ' : ''}가장 최근에 온 코드만 표시합니다. 코드는 ${data.ttlMin}분 뒤 사라집니다.` : '';
+  $('#cList').replaceChildren(...list.map((m) => h('div', { class: `card code-card ${m.id === freshId ? 'fresh' : ''}` },
+    data.all ? h('div', { class: 'code-who' }, m.address) : null,
     m.code ? h('button', { class: 'code-big', title: '눌러서 복사', onclick: () => copy(m.code) }, m.code)
       : h('div', { class: 'code-sub' }, '코드가 없는 메일입니다 — 아래 링크를 확인하세요.'),
-    h('div', { class: 'code-sub' }, `${i === 0 ? '최신 · ' : ''}${timeAgo(m.at)} 도착${m.code ? ' · 누르면 복사' : ''}`),
+    h('div', { class: 'code-sub' }, `${timeAgo(m.date || m.at)} 도착${m.code ? ' · 누르면 복사' : ''}`),
     h('div', { class: 'code-sub', title: m.subject }, m.subject || ''),
     m.links.length ? h('div', { class: 'code-links' }, m.links.map((u) => h('a', { class: 'btn sm', href: u, target: '_blank', rel: 'noopener noreferrer' }, '🔗 인증 링크 열기'))) : null)));
 }
@@ -27,9 +35,9 @@ function fail(msg) {
 
 async function load() {
   try { data = await api(`/api/code/${encodeURIComponent(token)}`); } catch (e) { return fail(e.message); }
-  document.title = `${data.label} 인증 코드 · ${data.siteTitle}`;
+  document.title = `인증 코드 · ${data.siteTitle}`;
   $('#cSite').textContent = data.siteTitle;
-  $('#cLabel').textContent = `${data.label} 인증 코드`;
+  $('#cLabel').textContent = data.all ? '전체 계정 인증 코드' : '인증 코드';
   $('#cAddr').textContent = data.address;
   render();
 }
