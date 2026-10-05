@@ -234,3 +234,7 @@ body.guest .editable small { display: none; }
 .guest-item { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; }
 .guest-info { flex: 1; min-width: 0; }
 .guest-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inbox-status { font-size: 13px; padding: 8px 12px; border-radius: 10px; background: var(--panel-2); color: var(--muted); margin-bottom: 10px; }
+.inbox-status.ok { background: var(--ok-weak); color: var(--ok); font-weight: 700; }
+.inbox-status.err { background: var(--danger-weak); color: var(--danger); font-weight: 700; }
+.inbox-setup h4 { margin: 14px 0 4px; font-size: 14px; }

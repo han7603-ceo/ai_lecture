@@ -106,6 +106,9 @@ Railway 는 저장소의 `railway.json` 에 따라 `exec node server.js` 로 실
 | `DATA_DIR` | `./data` | 상태 파일·업로드 파일 저장 위치 |
 | `MAX_FILE_MB` | `300` | 파일 1개 최대 용량(MB) |
 | `SOFFICE_PATH` | 자동 탐색 | LibreOffice `soffice` 실행 파일 경로 |
+| `INBOX_IMAP_USER` | (없음) | 인증 메일 연결: 확인할 Gmail 주소 (예: `ad.bodacompany@gmail.com`) |
+| `INBOX_IMAP_PASSWORD` | (없음) | 그 계정의 **Google 앱 비밀번호** 16자리 (2단계 인증 필요) |
+| `INBOX_IMAP_QUERY` | `from:openai.com newer_than:1d` | 가져올 메일의 Gmail 검색어 |
 | `CLOUDFLARED_PATH` | 자동 탐색/다운로드 | `cloudflared` 실행 파일 경로 (외부 접속 모드) |
 
 ## 데이터 보관
@@ -120,7 +123,7 @@ Railway 는 저장소의 `railway.json` 에 따라 `exec node server.js` 로 실
 
 - 뒤로가기 경고는 브라우저 정책상 "1차 방지"입니다. 새로고침/탭 닫기 경고창의 문구는 브라우저가 정한 기본 문구로 표시되며, 사용자가 페이지와 한 번도 상호작용하지 않았다면 표시되지 않을 수 있습니다 ([MDN: beforeunload](https://developer.mozilla.org/docs/Web/API/Window/beforeunload_event)).
 - 학생이 제출한 링크는 교사 화면에서 **링크 열기**를 누르면 새 탭(듀얼 모니터면 다른 모니터의 새 창)으로 열립니다. 외부 사이트가 대시보드를 조작하지 못하도록 연결을 끊고 열기 때문에, 링크마다 새 창이 열리며 다 본 창은 직접 닫아야 합니다.
-- **인증 메일 연결**은 서버가 Gmail 비밀번호를 갖지 않습니다. 교사 Google 계정 안에서 도는 Apps Script 가 조건(`QUERY`)에 맞는 메일만 연결 키와 함께 `/api/inbox` 로 보내고, 서버는 메모리에만 60분 보관합니다. 설정 방법은 대시보드 📬 인증 메일 → 연결 설정에 있습니다. 학생은 가입 메일을 한 번만 등록할 수 있고(다른 학생과 중복 불가), 변경은 교사만 할 수 있습니다. Apps Script 시간 트리거는 최소 1분 간격이라 1~2분 지연될 수 있습니다 ([설치형 트리거](https://developers.google.com/apps-script/guides/triggers/installable)).
+- **인증 메일 연결**은 두 가지 방법이 있습니다. ① (추천) Railway Variables 에 `INBOX_IMAP_USER`·`INBOX_IMAP_PASSWORD`(앱 비밀번호)를 넣으면 서버가 30초마다 메일함을 **읽기 전용**으로 검색해 조건에 맞는 메일만 가져옵니다(읽음 표시를 바꾸지 않음). 앱 비밀번호는 메일함 전체를 읽을 수 있는 열쇠이므로 Railway 변수에만 두고, 그만 쓸 때는 [Google 계정의 앱 비밀번호](https://support.google.com/accounts/answer/185833)에서 삭제하세요. ② 교사 Google 계정 안에서 도는 Apps Script 가 조건(`QUERY`)에 맞는 메일만 연결 키와 함께 `/api/inbox` 로 보내고, 서버는 메모리에만 60분 보관합니다. 설정 방법은 대시보드 📬 인증 메일 → 연결 설정에 있습니다. 학생은 가입 메일을 한 번만 등록할 수 있고(다른 학생과 중복 불가), 변경은 교사만 할 수 있습니다. Apps Script 시간 트리거는 최소 1분 간격이라 1~2분 지연될 수 있습니다 ([설치형 트리거](https://developers.google.com/apps-script/guides/triggers/installable)).
 - 교사가 보내는 링크와 학생이 제출하는 링크 모두 `http://`·`https://` 주소만 허용합니다. 학생이 링크를 누르면 이 서버를 한 번 거쳐(확인 기록) 원래 주소로 이동합니다.
 - 파일 보기 링크에는 접근 토큰이 포함됩니다. 교실 내 사용을 전제로 한 간단한 인증이므로 민감한 자료에는 사용하지 마세요.
 

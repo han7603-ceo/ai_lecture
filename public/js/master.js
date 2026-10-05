@@ -151,6 +151,7 @@ function connectSocket() {
   });
   socket.on('guests:update', (list) => { S.guests = list; renderGuests(); });
   socket.on('inbox:remove', ({ ids }) => { S.inbox = S.inbox.filter((m) => !ids.includes(m.id)); renderInbox(); });
+  socket.on('inbox:imap', (st) => { S.inboxImap = st; renderInbox(); });
   socket.on('inbox:config', ({ inboxEnabled, inboxKey }) => {
     S.inboxEnabled = inboxEnabled;
     if (inboxKey) S.inboxKey = inboxKey;
@@ -1100,6 +1101,12 @@ function renderInbox() {
   $('#inboxCount').classList.toggle('hidden', !list.length);
   if ($('#inboxModal').classList.contains('hidden')) return;
   $('#inboxEnabled').checked = !!S.inboxEnabled;
+  const im = S.inboxImap || {};
+  $('#inboxStatus').className = `inbox-status ${im.configured ? (im.ok ? 'ok' : (im.error ? 'err' : '')) : ''}`;
+  $('#inboxStatus').textContent = !im.configured
+    ? '연결 방식: Apps Script (또는 아직 연결 전) — 서버가 메일함을 직접 확인하려면 아래 연결 설정의 방법 1을 하세요.'
+    : im.ok ? `✅ 연결됨 — ${im.user} 메일함을 30초마다 확인 중 (조건: ${im.query}) · 마지막 확인 ${clock(im.lastCheck)}`
+      : im.error ? `⚠️ ${im.user}: ${im.error}` : `⏳ ${im.user} 연결 중…`;
   $('#inboxTtl').textContent = ` · ${S.inboxTtlMin}분 뒤 자동 삭제`;
   $('#inboxTtl2').textContent = `${S.inboxTtlMin}분`;
   $('#inboxKey').textContent = S.inboxKey;
@@ -1125,7 +1132,7 @@ async function copyText(text, msg) {
 }
 $('#inboxBtn').addEventListener('click', () => {
   $('#inboxModal').classList.remove('hidden');
-  $('#inboxSetup').open = !liveInbox().length;
+  $('#inboxSetup').open = !liveInbox().length && !S.inboxImap?.ok;
   renderInbox();
 });
 $('#inboxEnabled').addEventListener('change', async (e) => {
