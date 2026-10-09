@@ -92,6 +92,8 @@ function loadState() {
   }
 }
 const state = loadState();
+// 개인 입장 링크가 없던 기존 학생에게 발급
+for (const st of Object.values(state.students)) st.key ||= crypto.randomBytes(24).toString('hex');
 // 환경변수 MASTER_PASSWORD 가 있으면 항상 우선
 if (process.env.MASTER_PASSWORD) {
   state.passwordHash = hashPassword(process.env.MASTER_PASSWORD);
@@ -185,6 +187,9 @@ function publicStudent(s) {
     id: s.id, courseId: s.courseId, name: s.name, seat: s.seat,
     joinedAt: s.joinedAt, lastSeen: s.lastSeen, reviewedAt: s.reviewedAt || 0,
     online: (online.get(s.id) || 0) > 0,
+    hasPin: !!s.pinHash,
+    pinLocked: (s.pinLockUntil || 0) > Date.now(),
+    key: s.key, // 개인 입장 링크 (교사·본인에게만 — 참관자에게는 지움)
     files: s.files.map(publicFile),
   };
 }
@@ -215,7 +220,7 @@ const guestByToken = (t) => {
   return g && g.expiresAt > Date.now() ? g : null;
 };
 const guestSees = (g, courseId) => !g.courseId || g.courseId === courseId;
-const guestStudent = (p) => p;
+const guestStudent = ({ key, ...rest }) => rest;
 const GUEST_EVENTS = new Set(['student:update', 'student:remove', 'course:update', 'course:remove', 'material:update', 'material:remove', 'site:update', 'config:update']);
 const guestRooms = () => [...io.sockets.adapter.rooms.keys()].filter((r) => r.startsWith('guest:'));
 const toMasters = (event, payload) => {
@@ -362,40 +367,112 @@ app.post('/api/join/check', (req, res) => {
   });
 });
 
+// PIN: 4자리 숫자. 학생별 5회 틀리면 15분 잠금 + IP 당 15분에 30회 실패 시 차단 (추측 방지)
+const PIN_RE = /^\d{4}$/;
+const PIN_MAX_FAILS = 5;
+const PIN_LOCK_MS = 15 * 60 * 1000;
+const pinIpFails = new Map(); // ip -> { count, since }
+function pinIpBlocked(ip) {
+  const f = pinIpFails.get(ip);
+  if (f && Date.now() - f.since > PIN_LOCK_MS) pinIpFails.delete(ip);
+  return (pinIpFails.get(ip)?.count || 0) >= 30;
+}
+function pinIpFail(ip) {
+  const f = pinIpFails.get(ip) || { count: 0, since: Date.now() };
+  f.count++;
+  pinIpFails.set(ip, f);
+  if (pinIpFails.size > 10000) pinIpFails.clear();
+}
+const ensureKey = (s) => { if (!s.key) { s.key = newToken(); saveState(); } return s.key; };
+// 다른 기기에서 다시 들어오면 새 세션 토큰 발급 (이전 기기는 로그아웃)
+function rotateSession(s) {
+  s.token = newToken();
+  io.in(`student:${s.id}`).disconnectSockets(true);
+}
+
 app.post('/api/join', (req, res) => {
   const c = findCourseByCode(req.body.code);
   if (!c) return res.status(404).json({ error: '입장 코드가 올바르지 않습니다.' });
-  if (c.open === false) return res.status(403).json({ error: '현재 입장이 마감된 과목입니다.' });
   const name = cleanText(req.body.name, 30);
   if (!name) return res.status(400).json({ error: '이름을 입력해 주세요.' });
+  const pin = String(req.body.pin ?? '');
+  if (!PIN_RE.test(pin)) return res.status(400).json({ error: 'PIN은 숫자 4자리로 입력해 주세요.' });
+  const ip = req.ip || 'unknown';
 
   const list = studentsOf(c.id);
   const same = list.find((s) => s.name === name);
   if (same) {
-    if (!req.body.reclaim) {
-      return res.status(409).json({ error: '이미 같은 이름으로 등록된 학생이 있습니다.', canReclaim: !online.get(same.id) });
+    // 같은 이름 = 본인 재입장 시도 → PIN 확인 (수업이 끝났어도 본인은 들어와서 확인 가능)
+    if (pinIpBlocked(ip)) return res.status(429).json({ error: '시도가 너무 많습니다. 15분 후 다시 시도하세요.' });
+    if ((same.pinLockUntil || 0) > Date.now()) {
+      return res.status(423).json({ error: 'PIN을 여러 번 틀려 잠겼습니다. 15분 후 다시 시도하거나 선생님께 초기화를 요청하세요.' });
     }
-    if (online.get(same.id)) {
-      return res.status(409).json({ error: '같은 이름의 학생이 현재 접속 중입니다. 다른 이름을 사용해 주세요.', canReclaim: false });
+    if (same.pinHash && !verifyPassword(pin, same.pinHash)) {
+      pinIpFail(ip);
+      same.pinFails = (same.pinFails || 0) + 1;
+      if (same.pinFails >= PIN_MAX_FAILS) { same.pinLockUntil = Date.now() + PIN_LOCK_MS; same.pinFails = 0; }
+      saveState();
+      pushStudent(same);
+      const left = same.pinLockUntil > Date.now() ? 0 : PIN_MAX_FAILS - same.pinFails;
+      return res.status(401).json({
+        error: left ? `이미 같은 이름의 학생이 있습니다. 본인이면 PIN을 확인하세요 (남은 횟수 ${left}번). 본인이 아니면 이름 뒤에 숫자 등을 붙여 입장하세요.`
+          : 'PIN을 여러 번 틀려 15분 동안 잠겼습니다. 선생님께 초기화를 요청할 수 있습니다.',
+      });
     }
-    // 본인 재입장: 새 토큰 발급 (이전 기기 세션은 무효화)
-    same.token = newToken();
+    // PIN 이 없던 학생(이전 버전 또는 교사가 초기화)은 이번에 입력한 PIN 으로 설정
+    if (!same.pinHash) same.pinHash = hashPassword(pin);
+    same.pinFails = 0;
+    same.pinLockUntil = 0;
+    rotateSession(same);
+    ensureKey(same);
     saveState();
-    return res.json({ token: same.token, studentId: same.id });
+    pushStudent(same);
+    return res.json({ token: same.token, studentId: same.id, key: same.key, reclaimed: true });
   }
+  if (c.open === false) return res.status(403).json({ error: '현재 입장이 마감된 과목입니다.' });
   if (list.length >= c.maxStudents) return res.status(403).json({ error: `정원(${c.maxStudents}명)이 가득 찼습니다.` });
 
   const usedSeats = new Set(list.map((s) => s.seat));
   let seat = 1;
   while (usedSeats.has(seat)) seat++;
   const s = {
-    id: newId(), courseId: c.id, name, seat, token: newToken(),
+    id: newId(), courseId: c.id, name, seat, token: newToken(), key: newToken(), pinHash: hashPassword(pin),
     joinedAt: Date.now(), lastSeen: Date.now(), files: [],
   };
   state.students[s.id] = s;
   saveState();
   pushStudent(s);
-  res.json({ token: s.token, studentId: s.id });
+  res.json({ token: s.token, studentId: s.id, key: s.key });
+});
+
+// 개인 입장 링크(/s/<key>): 입장 코드·이름·PIN 없이 본인 자리로 (기기 여러 대에서 같이 사용 가능)
+app.get('/s/:key', (req, res) => res.redirect(`/student?k=${encodeURIComponent(req.params.key)}`));
+app.post('/api/join/key', (req, res) => {
+  const k = String(req.body?.key || '');
+  const s = k && Object.values(state.students).find((x) => x.key === k);
+  if (!s || !state.courses[s.courseId]) return res.status(404).json({ error: '개인 링크가 올바르지 않거나 다시 만들어졌습니다. 선생님께 새 링크를 받거나, 입장 코드와 이름·PIN으로 들어오세요.' });
+  res.json({ token: s.token, studentId: s.id, key: s.key, code: state.courses[s.courseId].code });
+});
+
+// 교사: PIN 초기화(다음 입장 때 새로 정함) / 개인 링크 다시 만들기(예전 링크 무효)
+app.post('/api/master/students/:id/reset-pin', requireMaster, (req, res) => {
+  const s = state.students[req.params.id];
+  if (!s) return res.status(404).json({ error: '학생을 찾을 수 없습니다.' });
+  delete s.pinHash;
+  s.pinFails = 0;
+  s.pinLockUntil = 0;
+  saveState();
+  pushStudent(s);
+  res.json({ ok: true });
+});
+app.post('/api/master/students/:id/regen-key', requireMaster, (req, res) => {
+  const s = state.students[req.params.id];
+  if (!s) return res.status(404).json({ error: '학생을 찾을 수 없습니다.' });
+  s.key = newToken();
+  rotateSession(s); // 예전 링크로 열어 둔 기기도 로그아웃
+  saveState();
+  pushStudent(s);
+  res.json({ key: s.key });
 });
 
 // ---------------------------------------------------------------------------

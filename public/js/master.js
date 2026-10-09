@@ -481,6 +481,8 @@ function renderDetail() {
   $('#dDot').className = `dot ${s.online ? 'on' : ''}`;
   $('#dName').textContent = s.name;
   $('#dSub').textContent = `${s.online ? '접속중' : `마지막 접속 ${timeAgo(s.lastSeen)}`} · 입장 ${clock(s.joinedAt)} · 파일 ${s.files.length}개`;
+  $('#dPin').textContent = s.pinLocked ? '🔒 PIN 잠김 (15분)' : s.hasPin ? 'PIN 설정됨' : 'PIN 없음';
+  $('#dPin').classList.toggle('locked', !!s.pinLocked);
   $('#dZip').href = `/api/master/students/${s.id}/zip?t=${encodeURIComponent(token)}`;
   $('#dZip').classList.toggle('hidden', !s.files.length);
 
@@ -662,6 +664,31 @@ async function deleteFile(s, f) {
     toast('삭제했습니다.');
   } catch (e) { toast(e.message, 'error'); }
 }
+
+// 학생 개인 입장 링크 · PIN
+const studentLink = (s) => `${baseUrl()}/s/${s.key}`;
+$('#dLinkCopy').addEventListener('click', () => {
+  const s = students.get(detailId);
+  if (s?.key) copyText(studentLink(s), `${s.name} 학생의 개인 링크를 복사했습니다. 본인에게만 전달하세요.`);
+});
+$('#dLinkQr').addEventListener('click', () => {
+  const s = students.get(detailId);
+  if (s?.key) showQrPage(`${s.seat}번 ${s.name}`, '개인 입장 링크 · 본인만 사용', studentLink(s));
+});
+$('#dPinReset').addEventListener('click', async () => {
+  const s = students.get(detailId);
+  if (!s || !(await confirmDialog(`${s.seat}번 ${s.name} 학생의 PIN 을 초기화할까요?\n학생이 다음에 이름으로 입장할 때 새 PIN 을 정합니다.`, { ok: '초기화' }))) return;
+  try { await api(`/api/master/students/${s.id}/reset-pin`, { method: 'POST', headers: H() }); toast('PIN 을 초기화했습니다.'); } catch (e) { toast(e.message, 'error'); }
+});
+$('#dLinkRegen').addEventListener('click', async () => {
+  const s = students.get(detailId);
+  if (!s || !(await confirmDialog(`${s.seat}번 ${s.name} 학생의 개인 링크를 새로 만들까요?\n예전 링크·QR 은 바로 막히고, 그 링크로 열려 있던 기기도 로그아웃됩니다.`, { ok: '새로 만들기', danger: true }))) return;
+  try {
+    const r = await api(`/api/master/students/${s.id}/regen-key`, { method: 'POST', headers: H() });
+    s.key = r.key;
+    copyText(studentLink(s), '새 개인 링크를 만들어 복사했습니다.');
+  } catch (e) { toast(e.message, 'error'); }
+});
 
 $('#dKick').addEventListener('click', async () => {
   const s = students.get(detailId);
@@ -1260,12 +1287,12 @@ $('#mboxAllRegen').addEventListener('click', async () => {
   if (!(await confirmDialog('통합 링크를 다시 만들까요?\n예전 통합 링크·QR 은 바로 쓸 수 없게 됩니다.', { ok: '다시 만들기', danger: true }))) return;
   try { const r = await api('/api/master/mailboxes/all-link/regen', { method: 'POST', headers: H() }); S.codeAllToken = r.codeAllToken; toast('새 통합 링크를 만들었습니다.'); } catch (e) { toast(e.message, 'error'); }
 });
-function showQr(b) {
-  const url = codeLink(b);
+function showQr(b) { showQrPage(`🔑 ${b.label}`, b.address, codeLink(b)); }
+function showQrPage(title, sub, url) {
   const w = window.open('', '_blank', 'width=420,height=560');
   if (!w) return toast('팝업이 차단되었습니다.', 'error');
-  w.document.write(`<!doctype html><meta charset="utf-8"><title>${b.label} 코드 확인</title><body style="font-family:sans-serif;text-align:center;padding:24px">
-    <h2 style="margin:0 0 4px">🔑 ${escHtml(b.label)}</h2><div style="color:#666;font-size:13px">${escHtml(b.address)}</div>
+  w.document.write(`<!doctype html><meta charset="utf-8"><title>${escHtml(title)}</title><body style="font-family:sans-serif;text-align:center;padding:24px">
+    <h2 style="margin:0 0 4px">${escHtml(title)}</h2><div style="color:#666;font-size:13px">${escHtml(sub)}</div>
     <img src="/api/qr?text=${encodeURIComponent(url)}" style="width:300px;height:300px;margin:12px 0"><div style="font-size:12px;word-break:break-all;color:#666">${escHtml(url)}</div></body>`);
 }
 const escHtml = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));

@@ -49,13 +49,13 @@ test('입장 → 업로드 → 교사 조회 → ZIP 다운로드', async () => 
   const big = await call('POST', '/api/master/courses', { token, body: { name: '대형', maxStudents: 999 } });
   assert.equal(big.data.course.maxStudents, 50);
 
-  assert.equal((await call('POST', '/api/join', { body: { code: 'WRONG1', name: 'x' } })).status, 404);
-  const a = await call('POST', '/api/join', { body: { code: course.code.toLowerCase(), name: '김학생' } });
+  assert.equal((await call('POST', '/api/join', { body: { code: 'WRONG1', name: 'x', pin: '1234' } })).status, 404);
+  const a = await call('POST', '/api/join', { body: { code: course.code.toLowerCase(), name: '김학생', pin: '1234' } });
   assert.equal(a.status, 200);
-  const dup = await call('POST', '/api/join', { body: { code: course.code, name: '김학생' } });
-  assert.equal(dup.status, 409);
-  await call('POST', '/api/join', { body: { code: course.code, name: '이학생' } });
-  const full = await call('POST', '/api/join', { body: { code: course.code, name: '박학생' } });
+  const dup = await call('POST', '/api/join', { body: { code: course.code, name: '김학생', pin: '9999' } });
+  assert.equal(dup.status, 401, '같은 이름 + 다른 PIN 은 거부');
+  await call('POST', '/api/join', { body: { code: course.code, name: '이학생', pin: '1234' } });
+  const full = await call('POST', '/api/join', { body: { code: course.code, name: '박학생', pin: '1234' } });
   assert.equal(full.status, 403, '정원 초과');
 
   const form = new FormData();
@@ -104,18 +104,18 @@ test('입장 → 업로드 → 교사 조회 → ZIP 다운로드', async () => 
 test('수업 시작/종료: 새 코드 발급, 입장·제출 열고 닫기', async () => {
   const { data: { token } } = await call('POST', '/api/master/login', { body: { password: 'test-pw' } });
   const { data: { course } } = await call('POST', '/api/master/courses', { token, body: { name: '세션', maxStudents: 5 } });
-  const a = await call('POST', '/api/join', { body: { code: course.code, name: '학생A' } });
+  const a = await call('POST', '/api/join', { body: { code: course.code, name: '학생A', pin: '1234' } });
 
   const ended = await call('POST', `/api/master/courses/${course.id}/end`, { token });
   assert.equal(ended.data.course.open, false);
-  assert.equal((await call('POST', '/api/join', { body: { code: course.code, name: '학생B' } })).status, 403);
+  assert.equal((await call('POST', '/api/join', { body: { code: course.code, name: '학생B', pin: '1234' } })).status, 403);
 
   const started = await call('POST', `/api/master/courses/${course.id}/start`, { token });
   assert.equal(started.data.course.open, true);
   assert.notEqual(started.data.course.code, course.code, '새 코드 발급');
   assert.ok(started.data.course.sessionStartedAt);
-  assert.equal((await call('POST', '/api/join', { body: { code: course.code, name: '학생B' } })).status, 404, '지난 코드는 무효');
-  assert.equal((await call('POST', '/api/join', { body: { code: started.data.course.code, name: '학생B' } })).status, 200);
+  assert.equal((await call('POST', '/api/join', { body: { code: course.code, name: '학생B', pin: '1234' } })).status, 404, '지난 코드는 무효');
+  assert.equal((await call('POST', '/api/join', { body: { code: started.data.course.code, name: '학생B', pin: '1234' } })).status, 200);
   // 이미 입장한 학생은 코드와 무관하게 유지
   assert.equal((await call('GET', '/api/student/me', { student: a.data.token })).status, 200);
 });
@@ -123,8 +123,8 @@ test('수업 시작/종료: 새 코드 발급, 입장·제출 열고 닫기', as
 test('자료 보내기: 전체/선택 대상, 권한, 확인 기록, 회수', async () => {
   const { data: { token } } = await call('POST', '/api/master/login', { body: { password: 'test-pw' } });
   const { data: { course } } = await call('POST', '/api/master/courses', { token, body: { name: '자료반', maxStudents: 5 } });
-  const a = (await call('POST', '/api/join', { body: { code: course.code, name: '가' } })).data;
-  const b = (await call('POST', '/api/join', { body: { code: course.code, name: '나' } })).data;
+  const a = (await call('POST', '/api/join', { body: { code: course.code, name: '가', pin: '1234' } })).data;
+  const b = (await call('POST', '/api/join', { body: { code: course.code, name: '나', pin: '1234' } })).data;
 
   const send = (target, name, text) => {
     const form = new FormData();
@@ -146,7 +146,7 @@ test('자료 보내기: 전체/선택 대상, 권한, 확인 기록, 회수', as
   assert.deepEqual(meB.materials.map((m) => m.name).sort(), ['개별자료.txt', '전체자료.txt']);
 
   // 나중에 입장한 학생도 전체 자료를 받음
-  const c = (await call('POST', '/api/join', { body: { code: course.code, name: '다' } })).data;
+  const c = (await call('POST', '/api/join', { body: { code: course.code, name: '다', pin: '1234' } })).data;
   assert.deepEqual((await call('GET', '/api/student/me', { student: c.token })).data.materials.map((m) => m.name), ['전체자료.txt']);
 
   // 대상이 아닌 학생은 파일 접근 불가
@@ -174,8 +174,8 @@ test('자료 보내기: 전체/선택 대상, 권한, 확인 기록, 회수', as
 test('링크(URL) 보내기: 주소 검사, 확인 기록 후 이동, 회수', async () => {
   const { data: { token } } = await call('POST', '/api/master/login', { body: { password: 'test-pw' } });
   const { data: { course } } = await call('POST', '/api/master/courses', { token, body: { name: '링크반', maxStudents: 5 } });
-  const a = (await call('POST', '/api/join', { body: { code: course.code, name: '가' } })).data;
-  const b = (await call('POST', '/api/join', { body: { code: course.code, name: '나' } })).data;
+  const a = (await call('POST', '/api/join', { body: { code: course.code, name: '가', pin: '1234' } })).data;
+  const b = (await call('POST', '/api/join', { body: { code: course.code, name: '나', pin: '1234' } })).data;
 
   const send = (links, target = 'all', file) => {
     const form = new FormData();
@@ -224,8 +224,8 @@ test('링크(URL) 보내기: 주소 검사, 확인 기록 후 이동, 회수', a
 test('학생 링크 제출: 주소 검사, 교사 조회, 이동, ZIP·CSV, 삭제, 마감', async () => {
   const { data: { token } } = await call('POST', '/api/master/login', { body: { password: 'test-pw' } });
   const { data: { course } } = await call('POST', '/api/master/courses', { token, body: { name: '링크제출반', maxStudents: 5 } });
-  const a = (await call('POST', '/api/join', { body: { code: course.code, name: '가' } })).data;
-  const other = (await call('POST', '/api/join', { body: { code: course.code, name: '나' } })).data;
+  const a = (await call('POST', '/api/join', { body: { code: course.code, name: '가', pin: '1234' } })).data;
+  const other = (await call('POST', '/api/join', { body: { code: course.code, name: '나', pin: '1234' } })).data;
   const submit = (body, t = a.token) => call('POST', '/api/student/links', { student: t, body });
 
   assert.equal((await submit({ url: 'javascript:alert(1)' })).status, 400);
@@ -342,7 +342,7 @@ test('인증 메일 연결: 키 검사, 코드 추출, 계정별 코드 확인 �
 test('수업 시작: 지난 수업 자료는 학생 화면에서 내리고 다시 보내기 가능', async () => {
   const { data: { token } } = await call('POST', '/api/master/login', { body: { password: 'test-pw' } });
   const { data: { course } } = await call('POST', '/api/master/courses', { token, body: { name: '보관반', maxStudents: 5 } });
-  const a = (await call('POST', '/api/join', { body: { code: course.code, name: '가' } })).data;
+  const a = (await call('POST', '/api/join', { body: { code: course.code, name: '가', pin: '1234' } })).data;
   const form = new FormData();
   form.append('files', new Blob(['W1']), '1주차.txt');
   form.append('target', 'all');
@@ -369,8 +369,8 @@ test('참관(게스트) 링크: 읽기 전용, 과목 범위, 민감 정보 제�
   const { data: { token } } = await call('POST', '/api/master/login', { body: { password: 'test-pw' } });
   const c1 = (await call('POST', '/api/master/courses', { token, body: { name: '참관반', maxStudents: 5 } })).data.course;
   const c2 = (await call('POST', '/api/master/courses', { token, body: { name: '다른반', maxStudents: 5 } })).data.course;
-  const a = (await call('POST', '/api/join', { body: { code: c1.code, name: '가' } })).data;
-  const b = (await call('POST', '/api/join', { body: { code: c2.code, name: '나' } })).data;
+  const a = (await call('POST', '/api/join', { body: { code: c1.code, name: '가', pin: '1234' } })).data;
+  const b = (await call('POST', '/api/join', { body: { code: c2.code, name: '나', pin: '1234' } })).data;
   const form = new FormData(); form.append('files', new Blob(['HELLO']), 'a.txt');
   const fa = (await call('POST', '/api/student/upload', { student: a.token, body: form })).data.student.files[0];
   const form2 = new FormData(); form2.append('files', new Blob(['OTHER']), 'b.txt');
@@ -406,6 +406,62 @@ test('참관(게스트) 링크: 읽기 전용, 과목 범위, 민감 정보 제�
   assert.equal((await call('GET', '/api/guest/state', { token: g.token })).status, 401);
   assert.equal((await call('GET', `/files/${fa.id}?t=${g.token}`)).status, 404);
   assert.equal((await call('GET', '/api/guest/state', { token: 'nope' })).status, 401);
+});
+
+test('학생 PIN·개인 링크: 재입장 확인, 잠금, 교사 초기화, 링크 다시 만들기', async () => {
+  const { data: { token } } = await call('POST', '/api/master/login', { body: { password: 'test-pw' } });
+  const { data: { course } } = await call('POST', '/api/master/courses', { token, body: { name: '핀반', maxStudents: 5 } });
+  const join = (name, pin, code = course.code) => call('POST', '/api/join', { body: { code, name, pin } });
+  assert.equal((await join('가', '12')).status, 400, 'PIN 형식');
+  assert.equal((await join('가', 'abcd')).status, 400);
+  const a = (await join('가', '4321')).data;
+  assert.match(a.key, /^[0-9a-f]{48}$/);
+
+  // 개인 링크로 입장: 코드·이름·PIN 없이 같은 학생
+  assert.equal((await call('GET', `/s/${a.key}`)).status, 200); // /student?k= 로 이동 후 페이지
+  const byKey = await call('POST', '/api/join/key', { body: { key: a.key } });
+  assert.equal(byKey.data.studentId, a.studentId);
+  assert.equal(byKey.data.code, course.code);
+  assert.equal((await call('POST', '/api/join/key', { body: { key: 'nope' } })).status, 404);
+
+  // 같은 이름 + 맞는 PIN → 본인 재입장 (새 세션, 이전 토큰 무효)
+  const re = await join('가', '4321');
+  assert.equal(re.status, 200);
+  assert.equal(re.data.studentId, a.studentId);
+  assert.equal((await call('GET', '/api/student/me', { student: a.token })).status, 401, '이전 기기 로그아웃');
+  assert.equal((await call('GET', '/api/student/me', { student: re.data.token })).data.student.key, a.key, '본인은 개인 링크 확인 가능');
+
+  // 5번 틀리면 잠금 → 맞는 PIN 도 거부
+  for (let i = 0; i < 4; i++) assert.equal((await join('가', '0000')).status, 401);
+  assert.equal((await join('가', '0000')).status, 401);
+  assert.equal((await join('가', '4321')).status, 423, '잠김');
+  let st = (await call('GET', '/api/master/state', { token })).data.students.find((x) => x.id === a.studentId);
+  assert.equal(st.pinLocked, true);
+  assert.equal(st.hasPin, true);
+
+  // 교사 PIN 초기화 → 다음 입장 때 새 PIN 으로 설정
+  await call('POST', `/api/master/students/${a.studentId}/reset-pin`, { token });
+  const after = await join('가', '5555');
+  assert.equal(after.status, 200);
+  assert.equal((await join('가', '4321')).status, 401, '예전 PIN 무효');
+  assert.equal((await join('가', '5555')).status, 200);
+
+  // 개인 링크 다시 만들기 → 예전 링크 무효
+  const nk = (await call('POST', `/api/master/students/${a.studentId}/regen-key`, { token })).data.key;
+  assert.notEqual(nk, a.key);
+  assert.equal((await call('POST', '/api/join/key', { body: { key: a.key } })).status, 404);
+  assert.equal((await call('POST', '/api/join/key', { body: { key: nk } })).status, 200);
+
+  // 수업이 끝나도 본인 재입장·개인 링크는 가능, 새 학생은 불가
+  await call('POST', `/api/master/courses/${course.id}/end`, { token });
+  assert.equal((await join('가', '5555')).status, 200);
+  assert.equal((await join('새학생', '1111')).status, 403);
+  assert.equal((await call('POST', '/api/join/key', { body: { key: nk } })).status, 200);
+
+  // 참관자에게는 개인 링크가 보이지 않음
+  const g = (await call('POST', '/api/master/guests', { token, body: { label: '참관', hours: 1 } })).data.guest;
+  st = (await call('GET', '/api/guest/state', { token: g.token })).data.students.find((x) => x.id === a.studentId);
+  assert.equal(st.key, undefined);
 });
 
 // 로그인 차단 테스트는 이 IP 를 15분간 막으므로 항상 마지막에 둔다
