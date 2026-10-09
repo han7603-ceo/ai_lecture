@@ -78,6 +78,10 @@ mark { background: color-mix(in srgb, var(--warn) 45%, transparent); color: inhe
 .detail-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 320px 1fr; }
 .detail-files { border-right: 1px solid var(--line); overflow: auto; padding: 12px; }
 .detail-actions { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
+.detail-entry { border: 1px solid var(--line, #ddd); border-radius: 10px; padding: 8px 10px 0; margin-bottom: 10px; }
+.detail-entry .de-head { font-size: 13px; margin-bottom: 6px; display: flex; gap: 6px; align-items: center; }
+.de-pin { font-size: 12px; padding: 1px 8px; border-radius: 99px; background: var(--panel-2); }
+.de-pin.locked { background: #fde2e2; color: #b42318; }
 .dfile {
   display: flex; gap: 10px; align-items: center; padding: 8px; border-radius: 10px; cursor: pointer; border: 1px solid transparent;
 }

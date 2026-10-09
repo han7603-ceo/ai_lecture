@@ -88,3 +88,8 @@
 .link-label { display: block; font-weight: 700; font-size: 14px; margin-bottom: 6px; }
 .link-row { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) auto; gap: 6px; }
 @media (max-width: 560px) { .link-row { grid-template-columns: 1fr auto; } .link-row #linkUrl { grid-column: 1 / -1; } }
+.pin-input { letter-spacing: 8px; font-size: 22px; text-align: center; }
+.pin-hint { margin: -6px 0 12px; }
+.mylink-card { border-color: var(--primary); background: var(--primary-weak); padding: 12px 14px; }
+.mylink-row { display: flex; align-items: center; gap: 10px; }
+.mylink-text { flex: 1; min-width: 0; display: grid; gap: 2px; }

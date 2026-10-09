@@ -13,6 +13,7 @@ const store = {
 };
 const tokens = store.get('lb_tokens') || {};
 let token = code ? tokens[code] : store.get('lb_last_token');
+const personalKey = params.get('k'); // 개인 입장 링크 (/s/<key> → /student?k=<key>)
 
 let me = null; // { siteTitle, course, student, maxFileMB, allowedExt }
 let pending = []; // { id, file, url }
@@ -26,6 +27,18 @@ const fileUrl = (f, download) => `/files/${f.id}?t=${encodeURIComponent(token)}$
 // ------------------------------------------------------------ 시작
 init();
 async function init() {
+  if (personalKey) {
+    try {
+      const r = await api('/api/join/key', { method: 'POST', body: { key: personalKey } });
+      remember(r.code, r.token);
+    } catch (e) {
+      code = '';
+      token = null;
+      await showJoin();
+      $('#joinErr').textContent = e.message;
+      return;
+    }
+  }
   if (token) {
     try {
       me = await api('/api/student/me', { headers: authHeaders() });
@@ -58,29 +71,35 @@ async function showJoin() {
     }
   }
   $('#nameInput').focus();
-  $('#nameForm').addEventListener('submit', (e) => { e.preventDefault(); join(false); });
+  $('#nameForm').addEventListener('submit', (e) => { e.preventDefault(); join(); });
+  $('#pinInput').addEventListener('input', (e) => { e.target.value = e.target.value.replace(/\D/g, '').slice(0, 4); });
 }
 
-async function join(reclaim) {
+function remember(c, t) {
+  token = t;
+  code = c || code;
+  if (code) tokens[code] = token;
+  store.set('lb_tokens', tokens);
+  store.set('lb_last_token', token);
+}
+
+async function join() {
   if (!$('#codeField').classList.contains('hidden')) code = $('#codeInput').value.trim().toUpperCase();
   const name = $('#nameInput').value.trim();
+  const pin = $('#pinInput').value.trim();
   $('#joinErr').textContent = '';
+  if (!/^\d{4}$/.test(pin)) { $('#joinErr').textContent = 'PIN은 숫자 4자리로 입력해 주세요.'; return $('#pinInput').focus(); }
   $('#joinBtn').disabled = true;
   try {
-    const r = await api('/api/join', { method: 'POST', body: { code, name, reclaim } });
-    token = r.token;
-    tokens[code] = token;
-    store.set('lb_tokens', tokens);
-    store.set('lb_last_token', token);
+    const r = await api('/api/join', { method: 'POST', body: { code, name, pin } });
+    remember(code, r.token);
     me = await api('/api/student/me', { headers: authHeaders() });
     history.replaceState(null, '', `/student?code=${code}`);
     $('#joinView').classList.add('hidden');
+    if (!r.reclaimed) store.set('lb_link_hidden', false); // 처음 입장하면 개인 링크 안내를 보여 줌
     enterMain();
+    if (r.reclaimed) toast('다시 입장했습니다. 다른 기기에서 열려 있던 화면은 로그아웃됩니다.');
   } catch (e) {
-    if (e.status === 409 && e.data?.canReclaim) {
-      const ok = await confirmDialog(`'${name}' 이름이 이미 등록되어 있습니다.\n본인이 맞다면 이전에 제출한 과제를 이어서 관리할 수 있습니다.`, { ok: '본인입니다 (재입장)', cancel: '다른 이름 사용' });
-      if (ok) return join(true);
-    }
     $('#joinErr').textContent = e.message;
   } finally {
     $('#joinBtn').disabled = false;
@@ -93,6 +112,7 @@ function enterMain() {
   $('#fileInput').accept = ACCEPT;
   $('#limitInfo').textContent = `파일당 최대 ${me.maxFileMB}MB`;
   renderHeader();
+  renderMyLink();
   renderMaterials();
   renderDone();
   bindUpload();
@@ -419,3 +439,14 @@ function fileItem(m) {
       h('a', { class: 'icon-btn', href: matUrl(m, '&download=1'), title: '다운로드' }, '⬇️')));
 }
 
+
+// ------------------------------------------------------------ 내 전용 입장 링크
+const myLink = () => `${location.origin}/s/${me.student.key}`;
+function renderMyLink() {
+  $('#myLinkCard').classList.toggle('hidden', !me.student.key || store.get('lb_link_hidden') === true);
+}
+$('#myLinkCopy').addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText(myLink()); toast('내 전용 링크를 복사했습니다. 즐겨찾기나 메모에 저장해 두세요.', 'ok', 4000); } catch { await promptDialog('아래 링크를 길게 눌러 복사하세요.', myLink(), { ok: '닫기' }); }
+});
+$('#myLinkHide').addEventListener('click', () => { store.set('lb_link_hidden', true); renderMyLink(); });
+$('#myLinkShow').addEventListener('click', (e) => { e.preventDefault(); store.set('lb_link_hidden', false); renderMyLink(); $('#myLinkCard').scrollIntoView({ behavior: 'smooth' }); });

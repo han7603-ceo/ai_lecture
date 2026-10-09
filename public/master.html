@@ -116,6 +116,15 @@
             <button class="btn sm master-only" id="dSendMat">📤 자료 보내기</button>
             <button class="btn sm master-only" id="dKick">🚪 학생 삭제</button>
           </div>
+          <div class="detail-entry master-only" id="dEntry">
+            <div class="de-head"><strong>🔐 입장</strong> <span class="de-pin" id="dPin"></span></div>
+            <div class="detail-actions">
+              <button class="btn sm" id="dLinkCopy" title="이 학생 전용 입장 링크 — 다른 기기에서도 이름·PIN 없이 바로 이어서 입장">🔗 개인 링크 복사</button>
+              <button class="btn sm" id="dLinkQr">QR</button>
+              <button class="btn sm" id="dPinReset" title="PIN 을 잊었을 때 — 학생이 다음 입장 때 새 PIN 을 정합니다">PIN 초기화</button>
+              <button class="btn sm" id="dLinkRegen" title="링크가 다른 사람에게 퍼졌을 때 — 예전 링크는 바로 막힙니다">🔄 링크 새로</button>
+            </div>
+          </div>
           <div id="dFiles"></div>
         </aside>
         <section class="detail-preview">
