@@ -255,3 +255,30 @@ body.guest .editable small { display: none; }
 .mat-archive { margin-top: 10px; border-top: 1px dashed var(--line); padding-top: 8px; }
 .mat-archive summary { cursor: pointer; color: var(--muted); font-size: 14px; margin-bottom: 6px; }
 .mat-item.archived { opacity: .8; }
+
+/* 과제 */
+.modal.assign { width: min(760px, 100%); }
+.modal.assign h3 { margin: 4px 0 10px; font-size: 16px; }
+.modal-head .muted.small { margin-left: 8px; }
+.am-form { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin-bottom: 16px; background: var(--panel-2); }
+.am-form textarea { resize: vertical; min-height: 44px; font: inherit; }
+.am-due-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.am-due-row input { width: auto; flex: 1 1 200px; }
+.am-list { display: grid; gap: 8px; }
+.am-item { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; }
+.am-item.editing { border-color: var(--primary); }
+.am-item .am-main { flex: 1 1 260px; min-width: 0; }
+.am-item .am-title { font-weight: 800; overflow-wrap: anywhere; }
+.am-item .am-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.am-item .am-acts { display: flex; gap: 4px; flex-wrap: wrap; }
+.am-st { font-size: 11px; font-weight: 800; padding: 1px 8px; border-radius: 99px; margin-left: 6px; vertical-align: middle; }
+.am-st.open { background: var(--ok-weak); color: var(--ok); }
+.am-st.late { background: var(--warn-weak); color: var(--warn); }
+.am-st.closed { background: var(--danger-weak); color: var(--danger); }
+.am-count { font-size: 13px; font-weight: 700; white-space: nowrap; }
+.am-empty { text-align: center; padding: 16px; }
+.atag { display: inline-block; font-size: 11px; font-weight: 700; padding: 0 6px; margin-right: 4px; border-radius: 6px; background: var(--primary-weak); color: var(--primary); max-width: 10em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+.atag.late { background: var(--warn-weak); color: var(--warn); }
+.st-late { color: var(--warn); font-weight: 700; }
+.assign-due { font-size: 12px; color: var(--muted); }
+#assignSelect { max-width: 260px; font-weight: 700; }

@@ -1,5 +1,6 @@
 import {
   $, h, api, toast, formatBytes, timeAgo, extOf, kindOf, iconOf, ACCEPT, confirmDialog, promptDialog,
+  assignmentState, dueText, fmtDue, submitStatus,
 } from './common.js';
 import { renderPreview } from './preview.js';
 
@@ -20,6 +21,7 @@ let pending = []; // { id, file, url }
 let socket = null;
 let allowLeave = false;
 let uploading = false;
+let pickId; // 제출할 과제 id (null = 기타, undefined = 아직 안 고름 → 마감 임박한 과제로 자동 선택)
 
 const authHeaders = () => ({ 'x-student-token': token });
 const fileUrl = (f, download) => `/files/${f.id}?t=${encodeURIComponent(token)}${download ? '&download=1' : ''}`;
@@ -114,10 +116,14 @@ function enterMain() {
   renderHeader();
   renderMyLink();
   renderMaterials();
+  renderAssignments();
+  renderHeader();
   renderDone();
   bindUpload();
   connectSocket();
   guardLeave();
+  // 남은 시간·마감 상태 갱신 (실제 마감 판단은 서버가 함)
+  setInterval(() => { renderAssignments(); renderHeader(); }, 30000);
 }
 
 function renderHeader() {
@@ -128,29 +134,40 @@ function renderHeader() {
   document.title = `${me.course.name} · ${me.siteTitle}`;
   const closed = !me.course.open;
   $('#closedNotice').classList.toggle('hidden', !closed);
-  $('#dropzone').classList.toggle('disabled', closed);
-  $('#uploadBtn').disabled = closed || uploading;
-  $('#linkBtn').disabled = closed;
+  const a = pickedAssignment();
+  const st = a && assignmentState(a);
+  const note = $('#assignClosedNotice');
+  note.classList.toggle('hidden', closed || !a || st === 'open');
+  note.classList.toggle('danger', st === 'closed');
+  note.classList.toggle('warn', st === 'late');
+  if (st === 'closed') note.textContent = `⛔ '${a.title}' 과제는 마감되었습니다. 다른 과제를 고르세요.`;
+  if (st === 'late') note.textContent = `⏰ '${a.title}' 과제는 마감이 지났습니다. 지금 내면 '지각'으로 표시됩니다.`;
+  const stop = closed || st === 'closed';
+  $('#dropzone').classList.toggle('disabled', stop);
+  $('#uploadBtn').disabled = stop || uploading;
+  $('#linkBtn').disabled = stop;
 }
 
 // ------------------------------------------------------------ 링크 제출 (미리보기 단계 없이 바로 제출)
 $('#linkForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   if (!me.course.open) return toast('제출이 마감되었습니다.', 'error');
+  if (pickedAssignment() && assignmentState(pickedAssignment()) === 'closed') return toast('마감된 과제입니다. 다른 과제를 고르세요.', 'error');
   const url = $('#linkUrl').value.trim();
   if (!url) return $('#linkUrl').focus();
   $('#linkBtn').disabled = true;
   try {
-    const r = await api('/api/student/links', { method: 'POST', body: { url, title: $('#linkTitle').value }, headers: authHeaders() });
+    const r = await api('/api/student/links', { method: 'POST', body: { url, title: $('#linkTitle').value, assignmentId: pickId || null }, headers: authHeaders() });
     me.student = r.student;
     $('#linkUrl').value = '';
     $('#linkTitle').value = '';
     renderDone();
-    toast('링크를 제출했습니다! ✅', 'ok');
+    renderAssignments();
+    toast(`${pickedAssignment() ? `'${pickedAssignment().title}' 과제에 ` : ''}링크를 제출했습니다! ✅`, 'ok');
   } catch (err) {
     toast(err.message, 'error', 4000);
   } finally {
-    $('#linkBtn').disabled = !me.course.open;
+    renderHeader();
   }
 });
 
@@ -167,7 +184,15 @@ $('#meChip').addEventListener('click', async () => {
 
 function connectSocket() {
   socket = io({ auth: { role: 'student', token } });
-  socket.on('connect', () => $('#connDot').classList.add('on'));
+  let connectedOnce = false;
+  socket.on('connect', async () => {
+    $('#connDot').classList.add('on');
+    // 다시 연결되면 끊긴 동안 바뀐 과제·자료를 새로 받음
+    if (connectedOnce) {
+      try { me = await api('/api/student/me', { headers: authHeaders() }); renderHeader(); renderMaterials(); renderAssignments(); renderHeader(); renderDone(); } catch { /* connect_error 에서 처리 */ }
+    }
+    connectedOnce = true;
+  });
   socket.on('disconnect', () => $('#connDot').classList.remove('on'));
   socket.on('connect_error', async () => {
     $('#connDot').classList.remove('on');
@@ -176,7 +201,21 @@ function connectSocket() {
   });
   socket.on('course:update', (c) => { me.course = c; renderHeader(); });
   socket.on('site:update', ({ siteTitle }) => { me.siteTitle = siteTitle; renderHeader(); });
-  socket.on('student:update', (s) => { me.student = s; renderHeader(); renderDone(); toast('선생님이 제출 파일을 정리했습니다.'); });
+  socket.on('student:update', (s) => { me.student = s; renderHeader(); renderDone(); renderAssignments(); toast('선생님이 제출 파일을 정리했습니다.'); });
+  socket.on('assignment:update', (a) => {
+    const i = me.assignments.findIndex((x) => x.id === a.id);
+    if (i >= 0) me.assignments[i] = a;
+    else {
+      me.assignments.push(a);
+      toast(`📝 새 과제: ${a.title}`, 'ok', 4000);
+    }
+    renderAssignments(); renderHeader(); renderDone();
+  });
+  socket.on('assignment:remove', ({ id }) => {
+    me.assignments = me.assignments.filter((a) => a.id !== id);
+    if (pickId === id) pickId = undefined;
+    renderAssignments(); renderHeader(); renderDone();
+  });
   socket.on('kicked', kicked);
   socket.on('material:new', (m) => {
     const i = me.materials.findIndex((x) => x.id === m.id);
@@ -294,7 +333,8 @@ function doUpload() {
   const form = new FormData();
   for (const p of batch) form.append('files', p.file, p.file.name);
   const xhr = new XMLHttpRequest();
-  xhr.open('POST', '/api/student/upload');
+  const target = pickedAssignment();
+  xhr.open('POST', `/api/student/upload${target ? `?a=${encodeURIComponent(target.id)}` : ''}`);
   xhr.setRequestHeader('x-student-token', token);
   $('#progress').classList.remove('hidden');
   $('#uploadBtn').disabled = true;
@@ -322,7 +362,8 @@ function doUpload() {
       me.student = data.student;
       renderPending();
       renderDone();
-      toast(`${batch.length}개 파일을 제출했습니다! ✅`, 'ok');
+      renderAssignments();
+      toast(`${target ? `'${target.title}' 과제에 ` : ''}${batch.length}개 파일을 제출했습니다! ✅`, 'ok');
     } else {
       toast(data.error || '업로드에 실패했습니다.', 'error', 4000);
     }
@@ -345,10 +386,10 @@ function renderDone() {
       h('div', { class: 'dthumb', onclick: open }, mediaThumb(f.ext, fileUrl(f))),
       h('div', { class: 'dinfo', onclick: open },
         h('div', { class: 'dname', title: f.name }, f.name),
-        h('div', { class: 'dsub' }, `${formatBytes(f.size)} · ${timeAgo(f.uploadedAt)} 제출`)),
+        h('div', { class: 'dsub' }, fileTags(f), `${formatBytes(f.size)} · ${timeAgo(f.uploadedAt)} 제출`)),
       h('div', { class: 'dact' },
         h('a', { class: 'icon-btn', href: fileUrl(f, true), title: '다운로드' }, '⬇️'),
-        h('button', { class: 'icon-btn', title: '삭제', onclick: () => removeFile(f) }, '🗑️'))));
+        deleteBtn(f))));
   }
 }
 
@@ -360,11 +401,78 @@ function doneLinkItem(f) {
     a('dthumb', '🔗'),
     a('dinfo',
       h('div', { class: 'dname', title: f.url }, f.name),
-      h('div', { class: 'dsub' }, `${host} · ${timeAgo(f.uploadedAt)} 제출`)),
+      h('div', { class: 'dsub' }, fileTags(f), `${host} · ${timeAgo(f.uploadedAt)} 제출`)),
     h('div', { class: 'dact' },
       a('icon-btn', '↗️'),
-      h('button', { class: 'icon-btn', title: '삭제', onclick: () => removeFile(f) }, '🗑️')));
+      deleteBtn(f)));
 }
+// 제출물에 붙는 과제 이름·지각 표시
+function fileTags(f) {
+  const a = assignById(f.assignmentId);
+  return [a ? h('span', { class: 'atag' }, a.title) : null, f.late ? h('span', { class: 'atag late' }, '지각') : null];
+}
+// 마감된 과제의 제출물은 지울 수 없음
+function deleteBtn(f) {
+  const a = assignById(f.assignmentId);
+  if (a && assignmentState(a) === 'closed') return h('span', { class: 'icon-btn locked', title: '마감된 과제라 지울 수 없습니다' }, '🔒');
+  return h('button', { class: 'icon-btn', title: '삭제', onclick: () => removeFile(f) }, '🗑️');
+}
+
+// ------------------------------------------------------------ 과제
+const assignById = (id) => (id ? (me.assignments || []).find((a) => a.id === id) : null);
+const pickedAssignment = () => assignById(pickId);
+const myFilesFor = (id) => me.student.files.filter((f) => (assignById(f.assignmentId) ? f.assignmentId : null) === id);
+// 열린 과제 → 지각 가능 → 마감, 같은 상태끼리는 마감 임박 순
+function sortedAssignments() {
+  const rank = { open: 0, late: 1, closed: 2 };
+  return [...(me.assignments || [])].sort((a, b) => rank[assignmentState(a)] - rank[assignmentState(b)]
+    || (a.dueAt || Infinity) - (b.dueAt || Infinity) || a.createdAt - b.createdAt);
+}
+function renderAssignments() {
+  const list = sortedAssignments();
+  $('#assignSection').classList.toggle('hidden', !list.length);
+  renderPick(list);
+  const box = $('#assignList');
+  box.innerHTML = '';
+  let todo = 0;
+  for (const a of list) {
+    const st = assignmentState(a);
+    const files = myFilesFor(a.id);
+    const my = submitStatus(files);
+    if (my === '미제출' && st !== 'closed') todo++;
+    const soon = st === 'open' && a.dueAt && a.dueAt - Date.now() < 24 * 3600e3;
+    const canSubmit = st !== 'closed' && me.course.open;
+    box.append(h('div', { class: `assign-card st-${st} ${pickId === a.id ? 'picked' : ''}` },
+      h('div', { class: 'ac-main' },
+        h('div', { class: 'ac-title' }, h('b', {}, a.title),
+          h('span', { class: `ac-my my-${my}` }, my === '미제출' ? '미제출' : `${my === '지각' ? '⏰ 지각' : '✔ 제출'} ${files.length}개`)),
+        a.desc ? h('div', { class: 'ac-desc' }, a.desc) : null,
+        h('div', { class: `ac-due ${soon ? 'soon' : ''}` }, `🕒 ${dueText(a)}`)),
+      canSubmit ? h('button', { class: `btn sm ${files.length ? '' : 'primary'}`, onclick: () => choose(a.id) }, files.length ? '더 내기' : '제출하기') : null));
+  }
+  $('#assignTodo').textContent = `안 낸 과제 ${todo}`;
+  $('#assignTodo').classList.toggle('hidden', !todo);
+}
+function renderPick(list) {
+  $('#assignPickWrap').classList.toggle('hidden', !list.length);
+  if (!list.length) { pickId = null; return; }
+  if (pickId === undefined || (pickId && !assignById(pickId))) pickId = list.find((a) => assignmentState(a) !== 'closed')?.id ?? null;
+  const sel = $('#assignPick');
+  sel.innerHTML = '';
+  for (const a of list) {
+    const st = assignmentState(a);
+    const tail = st === 'closed' ? ' (마감)' : st === 'late' ? ' (지각 제출)' : a.dueAt ? ` · ${fmtDue(a.dueAt)}까지` : '';
+    sel.append(h('option', { value: a.id, selected: a.id === pickId }, `📝 ${a.title}${tail}`));
+  }
+  sel.append(h('option', { value: '', selected: !pickId }, '기타 (특정 과제 아님)'));
+}
+function choose(id) {
+  pickId = id;
+  renderAssignments();
+  renderHeader();
+  $('#uploadSection').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+$('#assignPick').addEventListener('change', (e) => { pickId = e.target.value || null; renderAssignments(); renderHeader(); });
 
 async function removeFile(f) {
   if (!(await confirmDialog(`'${f.name}' ${f.kind === 'link' ? '링크를' : '파일을'} 삭제할까요?\n선생님 화면에서도 사라집니다.`, { ok: '삭제', danger: true }))) return;
@@ -372,6 +480,7 @@ async function removeFile(f) {
     const r = await api(`/api/student/files/${f.id}`, { method: 'DELETE', headers: authHeaders() });
     me.student = r.student;
     renderDone();
+    renderAssignments();
     toast('삭제했습니다.');
   } catch (e) { toast(e.message, 'error'); }
 }

@@ -1,5 +1,6 @@
 import {
   $, $$, h, api, toast, formatBytes, timeAgo, clock, iconOf, kindOf, extOf, ACCEPT, confirmDialog, promptDialog,
+  assignmentState, dueText, fmtDue, submitStatus,
 } from './common.js';
 import { renderPreview, thumbFor } from './preview.js';
 
@@ -25,14 +26,23 @@ let query = '';
 let socket = null;
 let detailId = null;
 let detailFileId = null;
+let assignFilter = ''; // 과제별 보기: '' 전체 / 과제 id / '_none' 기타
+let editingAssign = null; // 편집 중인 과제 id
 
 const H = () => ({ 'x-master-token': token });
 const fileUrl = (f, dl) => `/files/${f.id}?t=${encodeURIComponent(token)}${dl ? '&download=1' : ''}`;
 const course = () => S?.courses.find((c) => c.id === courseId);
 const byRecent = (a, b) => b.uploadedAt - a.uploadedAt;
+// 과제: 지금 과목의 과제(만든 순서), 파일의 과제 id (지워진 과제면 null = 기타)
+const courseAssignments = () => (S?.assignments || []).filter((a) => a.courseId === courseId).sort((a, b) => a.createdAt - b.createdAt);
+const assignById = (id) => (id ? (S?.assignments || []).find((a) => a.id === id) : null);
+const aidOf = (f) => (assignById(f.assignmentId) ? f.assignmentId : null);
+const filterAssign = () => (assignFilter && assignFilter !== '_none' ? assignById(assignFilter) : null);
+// 과제별 보기에서 보이는 파일
+const vf = (s) => (!assignFilter ? s.files : s.files.filter((f) => aidOf(f) === (assignFilter === '_none' ? null : assignFilter)));
 // 교사가 마지막으로 확인한 뒤에 올라온 파일 = NEW
-const newFiles = (s) => s.files.filter((f) => f.uploadedAt > (s.reviewedAt || 0));
-const latestAt = (s) => s.files.reduce((m, f) => Math.max(m, f.uploadedAt), 0);
+const newFiles = (s, files = s.files) => files.filter((f) => f.uploadedAt > (s.reviewedAt || 0));
+const latestAt = (s) => vf(s).reduce((m, f) => Math.max(m, f.uploadedAt), 0);
 const courseStudents = () => [...students.values()].filter((s) => s.courseId === courseId).sort((a, b) => a.seat - b.seat);
 
 // ------------------------------------------------------------ 로그인
@@ -95,7 +105,13 @@ function showDash() {
   renderAll();
   connectSocket();
   window.addEventListener('resize', onResize);
-  setInterval(() => renderGrid(), 30000); // "n분 전" 표시 갱신
+  // "n분 전" 표시와 과제 마감 상태 갱신
+  setInterval(() => {
+    renderAssignSelect();
+    renderStats();
+    renderGrid();
+    if (!$('#assignModal').classList.contains('hidden')) renderAssignList();
+  }, 30000);
 }
 
 function connectSocket() {
@@ -159,8 +175,20 @@ function connectSocket() {
     S.materials = S.materials.filter((m) => m.id !== id);
     renderMaterials();
   });
+  socket.on('assignment:update', (a) => {
+    const i = S.assignments.findIndex((x) => x.id === a.id);
+    if (i >= 0) S.assignments[i] = a; else S.assignments.push(a);
+    if (a.courseId === courseId) renderAssignmentsAll();
+  });
+  socket.on('assignment:remove', ({ id, courseId: cid }) => {
+    S.assignments = S.assignments.filter((a) => a.id !== id);
+    if (assignFilter === id) assignFilter = '';
+    if (editingAssign === id) resetAssignForm();
+    if (cid === courseId) renderAssignmentsAll();
+  });
   socket.on('course:remove', ({ id }) => {
     S.courses = S.courses.filter((c) => c.id !== id);
+    S.assignments = S.assignments.filter((a) => a.courseId !== id);
     if (courseId === id) courseId = S.courses[0]?.id || null;
     renderAll();
   });
@@ -192,7 +220,7 @@ function renderCourseSelect() {
   for (const c of S.courses) sel.append(h('option', { value: c.id, selected: c.id === courseId }, c.name));
   sel.classList.toggle('hidden', !S.courses.length);
 }
-$('#courseSelect').addEventListener('change', (e) => { courseId = e.target.value; query = ''; $('#search').value = ''; renderAll(); });
+$('#courseSelect').addEventListener('change', (e) => { courseId = e.target.value; query = ''; $('#search').value = ''; assignFilter = ''; renderAll(); });
 
 function renderCourseBar() {
   const c = course();
@@ -208,6 +236,7 @@ function renderCourseBar() {
   $('#liveBadge').textContent = c.sessionStartedAt ? `● 수업 중 · ${clock(c.sessionStartedAt)} 시작` : '● 입장·제출 열림';
   $('#startBtn').classList.toggle('hidden', c.open);
   $('#endBtn').classList.toggle('hidden', !c.open);
+  renderAssignSelect();
   renderStats();
 }
 
@@ -245,10 +274,24 @@ function renderStats() {
   if (!c) return;
   const list = courseStudents();
   const on = list.filter((s) => s.online).length;
-  const done = list.filter((s) => s.files.length).length;
-  const files = list.reduce((n, s) => n + s.files.length, 0);
-  const unchecked = list.filter((s) => newFiles(s).length).length;
+  const done = list.filter((s) => vf(s).length).length;
+  const files = list.reduce((n, s) => n + vf(s).length, 0);
+  const unchecked = list.filter((s) => newFiles(s, vf(s)).length).length;
   const stat = (label, val, cls = '') => h('div', { class: `stat ${cls}` }, label, h('b', {}, val));
+  const a = filterAssign();
+  if (a) {
+    // 과제 하나를 볼 때: 제출 / 지각 / 미제출 + 마감
+    const late = list.filter((s) => submitStatus(vf(s)) === '지각').length;
+    return $('#stats').replaceChildren(
+      stat('등록', list.length),
+      stat('접속중', on, 'ok'),
+      stat('제출', done - late, 'ok'),
+      stat('지각', late, late ? 'warn' : ''),
+      stat('미제출', list.length - done, 'warn'),
+      stat('확인 필요', unchecked, unchecked ? 'new' : ''),
+      h('div', { class: 'stat' }, '마감', h('b', { class: 'assign-due' }, dueText(a))),
+    );
+  }
   $('#stats').replaceChildren(
     stat('정원', c.maxStudents),
     stat('등록', list.length),
@@ -293,11 +336,11 @@ $('#sortSelect').addEventListener('change', (e) => { sortMode = e.target.value; 
 
 function matches(s) {
   if (filter === 'online' && !s.online) return false;
-  if (filter === 'done' && !s.files.length) return false;
-  if (filter === 'none' && s.files.length) return false;
+  if (filter === 'done' && !vf(s).length) return false;
+  if (filter === 'none' && vf(s).length) return false;
   if (!query) return true;
   return s.name.toLowerCase().includes(query) || String(s.seat) === query
-    || s.files.some((f) => f.name.toLowerCase().includes(query));
+    || vf(s).some((f) => f.name.toLowerCase().includes(query));
 }
 function highlight(text) {
   if (!query) return text;
@@ -326,7 +369,7 @@ function renderGrid() {
     }
   } else {
     // 최근 제출순 / 확인 필요 우선 (빈 자리 제외)
-    entries = [...list].sort((a, b) => (sortMode === 'new' ? newFiles(b).length - newFiles(a).length : 0)
+    entries = [...list].sort((a, b) => (sortMode === 'new' ? newFiles(b, vf(b)).length - newFiles(a, vf(a)).length : 0)
       || latestAt(b) - latestAt(a) || a.seat - b.seat);
   }
   layoutGrid(entries.length);
@@ -347,9 +390,10 @@ function fileIcon(f, size) {
 }
 
 function seatBox(s) {
-  const files = [...s.files].reverse().sort(byRecent);
+  const files = [...vf(s)].reverse().sort(byRecent);
   const latest = files[0];
-  const fresh = new Set(newFiles(s).map((f) => f.id));
+  const fresh = new Set(newFiles(s, files).map((f) => f.id));
+  const lateOnly = !!filterAssign() && submitStatus(files) === '지각';
   const cls = ['seat', s.online ? 'online' : 'offline', files.length ? 'done' : '', fresh.size ? 'has-new' : '', `view-${viewMode}`].join(' ');
 
   let body;
@@ -380,7 +424,8 @@ function seatBox(s) {
       fresh.size ? h('span', { class: 'new-badge' }, `NEW ${fresh.size}`) : null),
     body,
     h('div', { class: 'seat-foot' },
-      files.length ? h('span', { class: 'st-done' }, `✔ 제출 ${files.length}개`) : h('span', { class: 'st-none' }, '미제출'),
+      lateOnly ? h('span', { class: 'st-late' }, `⏰ 지각 ${files.length}개`)
+        : files.length ? h('span', { class: 'st-done' }, `✔ 제출 ${files.length}개`) : h('span', { class: 'st-none' }, '미제출'),
       h('span', {}, latest ? timeAgo(latest.uploadedAt) : s.online ? '접속중' : `접속 ${timeAgo(s.lastSeen)}`)));
 }
 
@@ -465,7 +510,7 @@ $('#detailModal').addEventListener('click', (e) => { if (e.target.id === 'detail
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     if (!$('#matPvModal').classList.contains('hidden')) return closeMatPreview();
-    closeDetail(); closeModal('#joinModal'); closeModal('#settingsModal'); closeModal('#materialsModal'); closeModal('#inboxModal');
+    closeDetail(); closeModal('#joinModal'); closeModal('#settingsModal'); closeModal('#materialsModal'); closeModal('#inboxModal'); closeModal('#assignModal');
   }
   if (detailId && !e.target.closest('input, textarea, select')) {
     if (e.key === 'ArrowLeft') stepDetail(-1);
@@ -506,7 +551,9 @@ function renderDetail() {
     h('div', { class: 'dthumb' }, thumb),
     h('div', { class: 'dinfo' },
       h('div', { class: 'dname', title: f.name }, f.uploadedAt > detailSince ? h('span', { class: 'new-tag' }, 'NEW') : null, f.name),
-      h('div', { class: 'dsub' }, `${f.kind === 'link' ? hostOf(f.url) : formatBytes(f.size)} · ${clock(f.uploadedAt)}`)),
+      h('div', { class: 'dsub' }, assignById(f.assignmentId) ? h('span', { class: 'atag' }, assignById(f.assignmentId).title) : null,
+        f.late ? h('span', { class: 'atag late' }, '지각') : null,
+        `${f.kind === 'link' ? hostOf(f.url) : formatBytes(f.size)} · ${clock(f.uploadedAt)}`)),
     f.kind === 'link'
       ? h('a', { class: 'icon-btn', href: f.url, target: '_blank', rel: 'noopener', title: '링크 열기', onclick: (e) => e.stopPropagation() }, '↗️')
       : h('a', { class: 'icon-btn', href: fileUrl(f, true), title: '다운로드', onclick: (e) => e.stopPropagation() }, '⬇️'),
@@ -757,14 +804,184 @@ $('#joinInfoBtn').addEventListener('click', openJoin);
 $('#codeChip').addEventListener('click', openJoin);
 $('#joinClose').addEventListener('click', () => closeModal('#joinModal'));
 function closeModal(sel) { $(sel).classList.add('hidden'); }
-for (const id of ['#joinModal', '#settingsModal', '#materialsModal', '#matPvModal', '#inboxModal']) {
+for (const id of ['#joinModal', '#settingsModal', '#materialsModal', '#matPvModal', '#inboxModal', '#assignModal']) {
   $(id).addEventListener('click', (e) => { if (e.target.id === id.slice(1) || e.target.closest('[data-close]')) closeModal(id); });
+}
+
+// ------------------------------------------------------------ 과제
+function renderAssignmentsAll() {
+  renderAssignSelect();
+  renderStats();
+  renderGrid();
+  if (detailId) renderDetail();
+  if (!$('#assignModal').classList.contains('hidden')) renderAssignList();
+}
+// 과제별 보기 선택: 과목에 과제가 있을 때만 표시
+function renderAssignSelect() {
+  const list = courseAssignments();
+  const sel = $('#assignSelect');
+  sel.classList.toggle('hidden', !list.length);
+  if (assignFilter && assignFilter !== '_none' && !assignById(assignFilter)) assignFilter = '';
+  if (!list.length) assignFilter = '';
+  sel.replaceChildren(
+    h('option', { value: '', selected: !assignFilter }, '📝 모든 제출물'),
+    ...list.map((a) => {
+      const st = assignmentState(a);
+      return h('option', { value: a.id, selected: assignFilter === a.id }, `📝 ${a.title}${st === 'closed' ? ' (마감)' : st === 'late' ? ' (마감 지남)' : ''}`);
+    }),
+    h('option', { value: '_none', selected: assignFilter === '_none' }, '기타 (과제 선택 안 함)'),
+  );
+  $('#zipAllBtn').textContent = filterAssign() ? '🗜️ 이 과제 ZIP' : '🗜️ 전체 ZIP';
+}
+$('#assignSelect').addEventListener('change', (e) => { assignFilter = e.target.value; renderAssignmentsAll(); });
+
+function downloadAssignZip(a) {
+  const n = courseStudents().filter((s) => s.files.some((f) => aidOf(f) === a.id)).length;
+  if (!n) return toast(`'${a.title}' 과제를 낸 학생이 아직 없습니다.`);
+  location.href = `/api/master/assignments/${a.id}/zip?t=${encodeURIComponent(token)}`;
+  toast('압축 파일을 만드는 중입니다… 다운로드가 곧 시작됩니다.');
+}
+
+// datetime-local 값 <-> 시각(ms). 입력값은 교사 컴퓨터의 현지 시각으로 해석
+const toLocalInput = (t) => (t ? new Date(t - new Date(t).getTimezoneOffset() * 60000).toISOString().slice(0, 16) : '');
+const fromLocalInput = (v) => (v ? new Date(v).getTime() : null);
+
+function openAssignments() {
+  const c = course();
+  if (!c) return;
+  $('#amCourse').textContent = c.name;
+  resetAssignForm();
+  renderAssignList();
+  $('#assignModal').classList.remove('hidden');
+  setTimeout(() => $('#amTitle').focus(), 50);
+}
+$('#assignBtn').addEventListener('click', openAssignments);
+
+function resetAssignForm() {
+  editingAssign = null;
+  $('#amForm').reset();
+  $('#amFormTitle').textContent = '새 과제';
+  $('#amSave').textContent = '＋ 과제 만들기';
+  $('#amCancel').classList.add('hidden');
+  if (!$('#assignModal').classList.contains('hidden')) renderAssignList();
+}
+function editAssignment(a) {
+  editingAssign = a.id;
+  $('#amTitle').value = a.title;
+  $('#amDesc').value = a.desc;
+  $('#amDue').value = toLocalInput(a.dueAt);
+  $('#amLate').checked = a.allowLate;
+  $('#amFormTitle').textContent = `과제 편집 — ${a.title}`;
+  $('#amSave').textContent = '💾 저장';
+  $('#amCancel').classList.remove('hidden');
+  renderAssignList();
+  $('#amForm').scrollIntoView({ behavior: 'smooth' });
+  $('#amTitle').focus();
+}
+$('#amCancel').addEventListener('click', resetAssignForm);
+$('#amForm').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-due]');
+  if (!b) return;
+  const now = new Date();
+  let t = null;
+  if (b.dataset.due === '1h') t = new Date(now.getTime() + 3600e3);
+  if (b.dataset.due === 'today') t = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59);
+  if (b.dataset.due === 'week') t = new Date(now.getTime() + 7 * 86400e3);
+  if (t) t.setSeconds(0, 0);
+  $('#amDue').value = t ? toLocalInput(t.getTime()) : '';
+});
+$('#amForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const title = $('#amTitle').value.trim();
+  if (!title) { toast('과제 이름을 입력해 주세요.', 'error'); return $('#amTitle').focus(); }
+  const dueAt = fromLocalInput($('#amDue').value);
+  const body = { title, desc: $('#amDesc').value, dueAt, allowLate: $('#amLate').checked };
+  const editing = editingAssign && assignById(editingAssign);
+  // 마감을 미래로 다시 잡으면 '마감하기'로 닫아 둔 과제도 다시 연다
+  if (editing && editing.closed && dueAt && dueAt > Date.now()) body.closed = false;
+  if (!editing && dueAt && dueAt <= Date.now() && !(await confirmDialog('마감 시각이 이미 지났습니다. 이대로 만들까요?\n학생은 이 과제에 낼 수 없습니다.', { ok: '그래도 만들기' }))) return;
+  try {
+    const r = editing
+      ? await api(`/api/master/assignments/${editing.id}`, { method: 'PATCH', body, headers: H() })
+      : await api(`/api/master/courses/${courseId}/assignments`, { method: 'POST', body, headers: H() });
+    const i = S.assignments.findIndex((x) => x.id === r.assignment.id);
+    if (i >= 0) S.assignments[i] = r.assignment; else S.assignments.push(r.assignment);
+    toast(editing ? '과제를 저장했습니다.' : `'${title}' 과제를 만들었습니다. 학생 화면에 바로 보입니다.`, 'ok', 3500);
+    resetAssignForm();
+    renderAssignmentsAll();
+  } catch (err) { toast(err.message, 'error'); }
+});
+
+async function patchAssignment(a, body, msg) {
+  try {
+    const r = await api(`/api/master/assignments/${a.id}`, { method: 'PATCH', body, headers: H() });
+    const i = S.assignments.findIndex((x) => x.id === a.id);
+    if (i >= 0) S.assignments[i] = r.assignment;
+    renderAssignmentsAll();
+    if (msg) toast(msg, 'ok');
+  } catch (e) { toast(e.message, 'error'); }
+}
+async function closeAssignment(a) {
+  if (!(await confirmDialog(`'${a.title}' 과제를 지금 마감할까요?\n학생은 더 낼 수 없고, 낸 파일도 지울 수 없게 됩니다.`, { ok: '지금 마감', danger: true }))) return;
+  patchAssignment(a, { closed: true }, '마감했습니다.');
+}
+function reopenAssignment(a) {
+  // 마감 시각이 지나서 닫힌 경우에는 마감 시각을 바꿔야 다시 열림
+  if (a.dueAt && a.dueAt <= Date.now() && !a.allowLate) {
+    toast('마감 시각이 지났습니다. 새 마감 시각을 정하거나 비우고 저장하세요.', 'info', 4000);
+    return editAssignment(a);
+  }
+  patchAssignment(a, { closed: false }, '다시 열었습니다.');
+}
+async function deleteAssignment(a) {
+  if (!(await confirmDialog(`'${a.title}' 과제를 삭제할까요?\n학생이 낸 파일은 지워지지 않고 '기타' 제출로 남습니다.`, { ok: '과제 삭제', danger: true }))) return;
+  try {
+    await api(`/api/master/assignments/${a.id}`, { method: 'DELETE', headers: H() });
+    S.assignments = S.assignments.filter((x) => x.id !== a.id);
+    if (assignFilter === a.id) assignFilter = '';
+    if (editingAssign === a.id) resetAssignForm();
+    renderAssignmentsAll();
+    toast('삭제했습니다.');
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+function renderAssignList() {
+  const box = $('#amList');
+  const list = courseAssignments();
+  const studentsNow = courseStudents();
+  box.replaceChildren();
+  if (!list.length) {
+    box.append(h('p', { class: 'muted am-empty' }, '아직 과제가 없습니다. 과제를 만들면 학생이 과제를 골라 제출하고, 마감이 지나면 제출이 막힙니다.'));
+    return;
+  }
+  for (const a of list) {
+    const st = assignmentState(a);
+    const statuses = studentsNow.map((s) => submitStatus(s.files.filter((f) => aidOf(f) === a.id)));
+    const done = statuses.filter((x) => x !== '미제출').length;
+    const late = statuses.filter((x) => x === '지각').length;
+    box.append(h('div', { class: `am-item ${editingAssign === a.id ? 'editing' : ''}` },
+      h('div', { class: 'am-main' },
+        h('div', { class: 'am-title' }, a.title,
+          h('span', { class: `am-st ${st}` }, st === 'open' ? '받는 중' : st === 'late' ? '지각 받는 중' : '마감')),
+        h('div', { class: 'am-sub' }, `🕒 ${dueText(a)}${a.allowLate ? ' · 지각 허용' : ''}`),
+        a.desc ? h('div', { class: 'am-sub' }, a.desc) : null),
+      h('span', { class: 'am-count' }, `제출 ${done}/${studentsNow.length}`, late ? h('span', { class: 'st-late' }, ` (지각 ${late})`) : null),
+      h('div', { class: 'am-acts' },
+        h('button', { class: 'btn sm', title: '대시보드를 이 과제 제출 현황으로', onclick: () => { assignFilter = a.id; closeModal('#assignModal'); renderAssignmentsAll(); } }, '👀 보기'),
+        h('button', { class: 'btn sm', onclick: () => editAssignment(a) }, '✏️ 편집'),
+        st === 'closed' ? h('button', { class: 'btn sm', onclick: () => reopenAssignment(a) }, '🔓 다시 열기')
+          : h('button', { class: 'btn sm', onclick: () => closeAssignment(a) }, '⏹ 지금 마감'),
+        h('button', { class: 'btn sm', onclick: () => downloadAssignZip(a) }, '🗜️ ZIP'),
+        h('button', { class: 'icon-btn', title: '과제 삭제', onclick: () => deleteAssignment(a) }, '🗑️'))));
+  }
 }
 
 // ------------------------------------------------------------ ZIP
 $('#zipAllBtn').addEventListener('click', () => {
   const c = course();
   if (!c) return;
+  const a = filterAssign();
+  if (a) return downloadAssignZip(a);
   const count = courseStudents().reduce((n, s) => n + s.files.length, 0);
   if (!count) return toast('아직 제출된 파일이 없습니다.');
   location.href = `/api/master/courses/${c.id}/zip?t=${encodeURIComponent(token)}`;

@@ -73,11 +73,24 @@
         <div id="matList" class="done-list"></div>
       </section>
 
-      <section class="card section">
+      <section class="card section hidden" id="assignSection">
+        <div class="section-head">
+          <h2>📝 과제 <span class="badge warn hidden" id="assignTodo"></span></h2>
+        </div>
+        <div id="assignList" class="assign-list"></div>
+      </section>
+
+      <section class="card section" id="uploadSection">
         <div class="section-head">
           <h2>과제 올리기</h2>
           <span class="muted small" id="limitInfo"></span>
         </div>
+
+        <label class="field assign-pick hidden" id="assignPickWrap">
+          <span>어느 과제에 낼까요?</span>
+          <select class="input" id="assignPick"></select>
+        </label>
+        <div class="notice danger hidden" id="assignClosedNotice"></div>
 
         <label class="dropzone" id="dropzone">
           <input type="file" id="fileInput" multiple hidden>

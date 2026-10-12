@@ -59,12 +59,14 @@
         <span class="badge ok hidden" id="liveBadge"></span>
         <span class="badge danger hidden" id="closedBadge">수업 종료 · 제출 마감</span>
         <div class="spacer"></div>
+        <button class="btn master-only" id="assignBtn">📝 과제 관리</button>
         <button class="btn primary hidden master-only" id="startBtn">▶ 수업 시작</button>
         <button class="btn danger hidden master-only" id="endBtn">⏹ 수업 종료</button>
       </div>
       <div class="stats" id="stats"></div>
       <div class="tools">
         <input class="input search" id="search" type="search" placeholder="🔍 학생 이름 · 자리번호 · 파일명 검색">
+        <select class="input sort hidden" id="assignSelect" aria-label="과제별 보기" title="과제별로 제출 현황 보기"></select>
         <div class="seg" id="filterSeg">
           <button data-f="all" class="active">전체</button>
           <button data-f="online">접속중</button>
@@ -137,6 +139,37 @@
           </div>
           <div id="dpBox" class="preview"></div>
         </section>
+      </div>
+    </div>
+  </div>
+
+  <!-- 과제 관리 -->
+  <div class="modal-bg hidden" id="assignModal">
+    <div class="modal assign">
+      <div class="modal-head"><strong>📝 과제 관리</strong><span class="muted small" id="amCourse"></span><div class="spacer"></div><button class="icon-btn" data-close aria-label="닫기">✕</button></div>
+      <div class="modal-body">
+        <form class="am-form" id="amForm" autocomplete="off">
+          <h3 id="amFormTitle">새 과제</h3>
+          <label class="field"><span>과제 이름</span><input class="input" id="amTitle" maxlength="60" placeholder="예) 3주차 포스터 시안"></label>
+          <label class="field"><span>설명 (선택)</span><textarea class="input" id="amDesc" maxlength="500" rows="2" placeholder="예) A4 세로, PDF 또는 이미지로 제출"></textarea></label>
+          <div class="field">
+            <span class="field-label">마감 <span class="muted small">(비우면 마감 없음 · 지나면 학생이 더 낼 수 없음)</span></span>
+            <div class="am-due-row">
+              <input class="input" type="datetime-local" id="amDue">
+              <button type="button" class="btn sm" data-due="1h">1시간 뒤</button>
+              <button type="button" class="btn sm" data-due="today">오늘 23:59</button>
+              <button type="button" class="btn sm" data-due="week">1주 뒤</button>
+              <button type="button" class="btn sm ghost" data-due="none">마감 없음</button>
+            </div>
+          </div>
+          <label class="switch-row"><input type="checkbox" id="amLate"> 마감 뒤에도 받기 (‘지각’으로 표시)</label>
+          <div class="row-actions">
+            <button type="button" class="btn ghost hidden" id="amCancel">편집 취소</button>
+            <button type="submit" class="btn primary" id="amSave">＋ 과제 만들기</button>
+          </div>
+        </form>
+        <h3>이 과목의 과제</h3>
+        <div id="amList" class="am-list"></div>
       </div>
     </div>
   </div>
