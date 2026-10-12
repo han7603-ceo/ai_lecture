@@ -1119,6 +1119,7 @@ function openSettings() {
     $('#sMax').value = c.maxStudents;
     $('#sMaxVal').textContent = c.maxStudents;
     $('#sOpen').checked = c.open;
+    $('#sShared').checked = !!c.sharedPc;
   }
   $('#sSite').value = S.siteTitle;
   const sel = $('#sBase');
@@ -1150,7 +1151,7 @@ $('#sSave').addEventListener('click', async () => {
   try {
     await api(`/api/master/courses/${c.id}`, {
       method: 'PATCH', headers: H(),
-      body: { name: $('#sName').value, maxStudents: Number($('#sMax').value), open: $('#sOpen').checked },
+      body: { name: $('#sName').value, maxStudents: Number($('#sMax').value), open: $('#sOpen').checked, sharedPc: $('#sShared').checked },
     });
     toast('과목 설정을 저장했습니다.', 'ok');
   } catch (e) { toast(e.message, 'error', 4000); }
