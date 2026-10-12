@@ -44,6 +44,7 @@
         <h1 class="title"><span id="courseName"></span></h1>
       </div>
       <div class="spacer"></div>
+      <button class="btn share-btn hidden" id="shareBtn" title="내 화면을 선생님께 보여 주기 (내가 고른 화면만, 언제든 중지 가능)">🖥️ <span class="share-btn-text">화면 보여주기</span></button>
       <button class="me-chip" id="meChip" title="이름 변경">
         <span class="dot" id="connDot"></span>
         <span class="seat" id="mySeat"></span>
@@ -63,6 +64,12 @@
           <button class="icon-btn" id="myLinkHide" title="숨기기 (아래 '내 개인 링크'로 다시 볼 수 있음)">✕</button>
         </div>
       </section>
+
+      <div class="share-bar hidden" id="shareBar">
+        <span class="share-dot"></span>
+        <span class="share-text" id="shareText">선생님께 화면을 보여 주는 중</span>
+        <button class="btn sm danger" id="shareStop">공유 중지</button>
+      </div>
 
       <div class="notice danger hidden" id="closedNotice">⛔ 제출이 마감되었습니다. 새 파일을 올릴 수 없습니다.</div>
 

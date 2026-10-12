@@ -115,6 +115,7 @@ function enterMain() {
   $('#limitInfo').textContent = `파일당 최대 ${me.maxFileMB}MB`;
   renderHeader();
   renderMyLink();
+  renderShare();
   renderMaterials();
   renderAssignments();
   renderHeader();
@@ -187,6 +188,7 @@ function connectSocket() {
   let connectedOnce = false;
   socket.on('connect', async () => {
     $('#connDot').classList.add('on');
+    if (shareStream) socket.emit('screen:state', { sharing: true }); // 끊겼다 이어져도 공유 상태 유지
     // 다시 연결되면 끊긴 동안 바뀐 과제·자료를 새로 받음
     if (connectedOnce) {
       try { me = await api('/api/student/me', { headers: authHeaders() }); renderHeader(); renderMaterials(); renderAssignments(); renderHeader(); renderDone(); } catch { /* connect_error 에서 처리 */ }
@@ -217,6 +219,7 @@ function connectSocket() {
     renderAssignments(); renderHeader(); renderDone();
   });
   socket.on('kicked', kicked);
+  bindScreen();
   socket.on('material:new', (m) => {
     const i = me.materials.findIndex((x) => x.id === m.id);
     if (i >= 0) me.materials[i] = m;
@@ -233,6 +236,7 @@ function connectSocket() {
 }
 
 function kicked() {
+  if (typeof shareStream !== 'undefined' && shareStream) stopShare();
   socket?.disconnect();
   delete tokens[code];
   store.set('lb_tokens', tokens);
@@ -559,3 +563,140 @@ $('#myLinkCopy').addEventListener('click', async () => {
 });
 $('#myLinkHide').addEventListener('click', () => { store.set('lb_link_hidden', true); renderMyLink(); });
 $('#myLinkShow').addEventListener('click', (e) => { e.preventDefault(); store.set('lb_link_hidden', false); renderMyLink(); $('#myLinkCard').scrollIntoView({ behavior: 'smooth' }); });
+
+// ------------------------------------------------------------ 화면 공유 (학생이 직접 시작, 고른 화면만, 언제든 중지)
+// 영상은 WebRTC 로 선생님 PC 에 바로 가고, 직접 연결이 안 되면 1초마다 화면 사진을 서버를 거쳐 보냄
+const canShare = !!navigator.mediaDevices?.getDisplayMedia && !/Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+let shareStream = null;
+let shareVideo = null;
+let imageCapture = null;
+const peers = new Map(); // 선생님 소켓 id -> RTCPeerConnection
+const frameTickers = new Map(); // 선생님 소켓 id -> Worker (사진 모드)
+
+function renderShare() {
+  $('#shareBtn').classList.toggle('hidden', !canShare || !!shareStream);
+  $('#shareBar').classList.toggle('hidden', !shareStream);
+  $('#shareText').textContent = peers.size + frameTickers.size
+    ? '선생님이 지금 내 화면을 보고 있습니다'
+    : '화면 공유 중 · 선생님이 열면 보입니다';
+}
+async function startShare() {
+  if (shareStream) return;
+  if (!canShare) return toast('이 기기에서는 화면 공유를 할 수 없습니다. PC의 크롬·엣지에서 해 주세요.', 'error', 4000);
+  try {
+    shareStream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 10, max: 15 } }, audio: false });
+  } catch (e) {
+    shareStream = null;
+    if (e.name !== 'NotAllowedError') toast('화면 공유를 시작하지 못했습니다.', 'error');
+    socket?.emit('screen:decline');
+    return renderShare();
+  }
+  const track = shareStream.getVideoTracks()[0];
+  if ('contentHint' in track) track.contentHint = 'detail'; // 글씨가 잘 보이도록 해상도 우선
+  track.addEventListener('ended', stopShare); // 브라우저의 '공유 중지' 버튼
+  imageCapture = window.ImageCapture ? new ImageCapture(track) : null;
+  shareVideo = document.createElement('video');
+  shareVideo.muted = true;
+  shareVideo.playsInline = true;
+  shareVideo.srcObject = shareStream;
+  shareVideo.play().catch(() => {});
+  socket.emit('screen:state', { sharing: true });
+  renderShare();
+  toast('화면 공유를 시작했습니다. 언제든 「공유 중지」로 끌 수 있습니다.', 'ok', 4000);
+}
+function closeViewer(viewer) {
+  peers.get(viewer)?.close();
+  peers.delete(viewer);
+  frameTickers.get(viewer)?.terminate();
+  frameTickers.delete(viewer);
+}
+function stopShare() {
+  if (!shareStream) return;
+  for (const v of [...peers.keys(), ...frameTickers.keys()]) closeViewer(v);
+  shareStream.getTracks().forEach((t) => t.stop());
+  shareStream = null;
+  shareVideo = null;
+  imageCapture = null;
+  socket?.emit('screen:state', { sharing: false });
+  renderShare();
+  toast('화면 공유를 멈췄습니다.');
+}
+$('#shareBtn').addEventListener('click', startShare);
+$('#shareStop').addEventListener('click', stopShare);
+
+// 다른 창을 보고 있어도(백그라운드) 멈추지 않도록 워커 타이머 사용
+function ticker(ms, fn) {
+  const w = new Worker(URL.createObjectURL(new Blob([`setInterval(() => postMessage(0), ${ms})`], { type: 'text/javascript' })));
+  w.onmessage = fn;
+  return w;
+}
+async function grabFrame() {
+  if (imageCapture) {
+    try { return await imageCapture.grabFrame(); } catch { /* 비디오로 대신 */ }
+  }
+  return shareVideo?.videoWidth ? shareVideo : null;
+}
+function startFrames(viewer) {
+  const canvas = document.createElement('canvas');
+  let busy = false;
+  frameTickers.set(viewer, ticker(1000, async () => {
+    if (busy || !shareStream) return;
+    busy = true;
+    try {
+      const src = await grabFrame();
+      if (!src) return;
+      const w = src.videoWidth || src.width;
+      const ht = src.videoHeight || src.height;
+      const scale = Math.min(1, 1280 / w);
+      canvas.width = Math.round(w * scale);
+      canvas.height = Math.round(ht * scale);
+      canvas.getContext('2d').drawImage(src, 0, 0, canvas.width, canvas.height);
+      src.close?.();
+      const blob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', 0.6));
+      if (blob && frameTickers.has(viewer)) socket.emit('screen:frame', { viewer, buf: await blob.arrayBuffer() });
+    } finally { busy = false; }
+  }));
+}
+
+function bindScreen() {
+  socket.on('screen:request', async () => {
+    if (shareStream) return;
+    if (!canShare) {
+      socket.emit('screen:decline');
+      return toast('선생님이 화면 보기를 요청했지만, 이 기기에서는 화면 공유를 할 수 없습니다.', 'error', 5000);
+    }
+    const ok = await confirmDialog('선생님이 내 화면을 보고 싶어 합니다.\n\n「공유 시작」을 누르고 보여 줄 화면(전체 화면·창·탭)을 고르세요.\n고른 화면만 보이고, 언제든 「공유 중지」로 끌 수 있습니다.', { ok: '공유 시작', cancel: '거절' });
+    if (ok) startShare(); else socket.emit('screen:decline');
+  });
+  socket.on('screen:watch', async ({ viewer }) => {
+    if (!shareStream) return;
+    closeViewer(viewer);
+    const pc = new RTCPeerConnection({ iceServers: me.iceServers });
+    peers.set(viewer, pc);
+    shareStream.getTracks().forEach((t) => pc.addTrack(t, shareStream));
+    pc.onicecandidate = (e) => { if (e.candidate) socket.emit('screen:signal', { viewer, data: { candidate: e.candidate.toJSON() } }); };
+    await pc.setLocalDescription(await pc.createOffer());
+    socket.emit('screen:signal', { viewer, data: { sdp: pc.localDescription.toJSON() } });
+    renderShare();
+  });
+  socket.on('screen:signal', async ({ viewer, data }) => {
+    const pc = peers.get(viewer);
+    if (!pc) return;
+    try {
+      if (data.sdp) await pc.setRemoteDescription(data.sdp);
+      else if (data.candidate) await pc.addIceCandidate(data.candidate);
+    } catch { /* 늦게 온 연결 후보 등은 무시 */ }
+  });
+  socket.on('screen:fallback', ({ viewer }) => {
+    if (!shareStream) return;
+    closeViewer(viewer);
+    startFrames(viewer);
+    renderShare();
+  });
+  socket.on('screen:unwatch', ({ viewer }) => { closeViewer(viewer); renderShare(); });
+  socket.on('screen:replaced', () => {
+    if (!shareStream) return;
+    stopShare();
+    toast('다른 기기에서 화면 공유를 시작해 이 기기의 공유를 멈췄습니다.');
+  });
+}
