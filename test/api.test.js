@@ -547,6 +547,20 @@ test('과제별 제출·마감: 지각 허용, 마감 후 차단·삭제 금지,
   assert.ok(!ms.data.assignments.some((a) => a.courseId === course.id));
 });
 
+test('공용 PC 모드: 과목 설정이 입장 확인·입장·개인 링크 응답에 전달됨', async () => {
+  const { data: { token } } = await call('POST', '/api/master/login', { body: { password: 'test-pw' } });
+  const { data: { course } } = await call('POST', '/api/master/courses', { token, body: { name: 'PC실', maxStudents: 3 } });
+  assert.equal(course.sharedPc, false);
+  const r = await call('PATCH', `/api/master/courses/${course.id}`, { token, body: { sharedPc: true } });
+  assert.equal(r.data.course.sharedPc, true);
+  assert.equal((await call('POST', '/api/join/check', { body: { code: course.code } })).data.sharedPc, true);
+  const j = await call('POST', '/api/join', { body: { code: course.code, name: '공용', pin: '1234' } });
+  assert.equal(j.data.sharedPc, true);
+  assert.equal((await call('POST', '/api/join', { body: { code: course.code, name: '공용', pin: '1234' } })).data.sharedPc, true, '재입장도');
+  assert.equal((await call('POST', '/api/join/key', { body: { key: j.data.key } })).data.sharedPc, true);
+  assert.equal((await call('GET', '/api/student/me', { student: (await call('POST', '/api/join/key', { body: { key: j.data.key } })).data.token })).data.course.sharedPc, true);
+});
+
 // 로그인 차단 테스트는 이 IP 를 15분간 막으므로 항상 마지막에 둔다
 test('로그인 실패가 반복되면 차단', async () => {
   let last;

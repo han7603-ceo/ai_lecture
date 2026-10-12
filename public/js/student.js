@@ -8,12 +8,17 @@ const params = new URLSearchParams(location.search);
 let code = (params.get('code') || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 
 // 기기에 입장 정보를 기억 → 새로고침/재접속 시 자동 복귀
-const store = {
-  get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
-  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* 사생활 보호 모드 */ } },
-};
+// 공용 PC 모드면 sessionStorage 에만 둠 → 브라우저(탭)를 닫으면 지워져 다음 사람이 이어서 들어갈 수 없음
+const makeStore = (pick) => ({
+  get(k) { try { return JSON.parse(pick().getItem(k)); } catch { return null; } },
+  set(k, v) { try { if (v == null) pick().removeItem(k); else pick().setItem(k, JSON.stringify(v)); } catch { /* 사생활 보호 모드 */ } },
+});
+const store = makeStore(() => localStorage);
+const session = makeStore(() => sessionStorage);
+let sharedPc = session.get('lb_shared') === true;
 const tokens = store.get('lb_tokens') || {};
-let token = code ? tokens[code] : store.get('lb_last_token');
+const sessionTokens = session.get('lb_tokens') || {};
+let token = code ? (sessionTokens[code] || tokens[code]) : (session.get('lb_last_token') || store.get('lb_last_token'));
 const personalKey = params.get('k'); // 개인 입장 링크 (/s/<key> → /student?k=<key>)
 
 let me = null; // { siteTitle, course, student, maxFileMB, allowedExt }
@@ -30,9 +35,11 @@ const fileUrl = (f, download) => `/files/${f.id}?t=${encodeURIComponent(token)}$
 init();
 async function init() {
   if (personalKey) {
+    // 주소창·방문 기록에 개인 링크가 남지 않도록 바로 지움
+    history.replaceState(null, '', '/student');
     try {
       const r = await api('/api/join/key', { method: 'POST', body: { key: personalKey } });
-      remember(r.code, r.token);
+      remember(r.code, r.token, r.sharedPc);
     } catch (e) {
       code = '';
       token = null;
@@ -65,6 +72,7 @@ async function showJoin() {
       $('#joinSite').textContent = info.siteTitle;
       $('#joinCourse').textContent = info.courseName;
       document.title = `${info.courseName} · ${info.siteTitle}`;
+      if (info.sharedPc) lockShared();
       if (!info.open) $('#joinErr').textContent = '현재 입장이 마감된 과목입니다.';
       else if (info.full) $('#joinErr').textContent = '정원이 가득 찼습니다. 선생님께 문의하세요.';
     } catch (e) {
@@ -77,12 +85,39 @@ async function showJoin() {
   $('#pinInput').addEventListener('input', (e) => { e.target.value = e.target.value.replace(/\D/g, '').slice(0, 4); });
 }
 
-function remember(c, t) {
+// 선생님이 공용 PC 모드로 정한 과목: 체크를 켜고 바꿀 수 없게
+function lockShared() {
+  $('#sharedInput').checked = true;
+  $('#sharedInput').disabled = true;
+  $('#sharedRow').classList.add('locked');
+  $('#sharedHint').textContent = '이 과목은 선생님이 공용 PC 모드로 정했어요. 브라우저를 닫으면 자동으로 나가집니다.';
+}
+function remember(c, t, shared = sharedPc) {
   token = t;
   code = c || code;
-  if (code) tokens[code] = token;
+  sharedPc = !!shared;
+  if (sharedPc) {
+    // 이 PC 에는 남기지 않음 (예전에 저장된 것도 지움)
+    if (code) { sessionTokens[code] = token; delete tokens[code]; }
+    session.set('lb_tokens', sessionTokens);
+    session.set('lb_last_token', token);
+    session.set('lb_shared', true);
+    store.set('lb_tokens', tokens);
+    if (store.get('lb_last_token') === token) store.set('lb_last_token', null);
+  } else {
+    if (code) tokens[code] = token;
+    store.set('lb_tokens', tokens);
+    store.set('lb_last_token', token);
+  }
+}
+// 이 기기에 남은 입장 정보 모두 지우기
+function forget() {
+  for (const t of [tokens, sessionTokens]) for (const k of Object.keys(t)) if (t[k] === token || k === code) delete t[k];
   store.set('lb_tokens', tokens);
-  store.set('lb_last_token', token);
+  session.set('lb_tokens', sessionTokens);
+  if (store.get('lb_last_token') === token) store.set('lb_last_token', null);
+  session.set('lb_last_token', null);
+  session.set('lb_shared', null);
 }
 
 async function join() {
@@ -94,11 +129,11 @@ async function join() {
   $('#joinBtn').disabled = true;
   try {
     const r = await api('/api/join', { method: 'POST', body: { code, name, pin } });
-    remember(code, r.token);
+    remember(code, r.token, r.sharedPc || $('#sharedInput').checked);
     me = await api('/api/student/me', { headers: authHeaders() });
     history.replaceState(null, '', `/student?code=${code}`);
     $('#joinView').classList.add('hidden');
-    if (!r.reclaimed) store.set('lb_link_hidden', false); // 처음 입장하면 개인 링크 안내를 보여 줌
+    if (!r.reclaimed || sharedPc) linkPref().set('lb_link_hidden', false); // 처음 입장(공용 PC 는 매번)하면 개인 링크 안내를 보여 줌
     enterMain();
     if (r.reclaimed) toast('다시 입장했습니다. 다른 기기에서 열려 있던 화면은 로그아웃됩니다.');
   } catch (e) {
@@ -128,6 +163,10 @@ function enterMain() {
 }
 
 function renderHeader() {
+  document.body.classList.toggle('shared-pc', sharedPc);
+  $('#footResume').textContent = sharedPc
+    ? '공용 PC 모드: 브라우저를 닫거나 🚪 나가기를 누르면 이 PC에서 나가집니다.'
+    : '같은 기기로 다시 들어오면 자동으로 이어집니다.';
   $('#siteTitle').textContent = me.siteTitle;
   $('#courseName').textContent = me.course.name;
   $('#myName').textContent = me.student.name;
@@ -201,7 +240,11 @@ function connectSocket() {
     // 교사가 학생을 삭제했거나 과목이 초기화된 경우
     try { await api('/api/student/me', { headers: authHeaders() }); } catch (e) { if (e.status === 401 || e.status === 410) kicked(); }
   });
-  socket.on('course:update', (c) => { me.course = c; renderHeader(); });
+  socket.on('course:update', (c) => {
+    me.course = c;
+    if (c.sharedPc && !sharedPc) { remember(code, token, true); renderMyLink(); } // 선생님이 공용 PC 모드를 켬
+    renderHeader();
+  });
   socket.on('site:update', ({ siteTitle }) => { me.siteTitle = siteTitle; renderHeader(); });
   socket.on('student:update', (s) => { me.student = s; renderHeader(); renderDone(); renderAssignments(); toast('선생님이 제출 파일을 정리했습니다.'); });
   socket.on('assignment:update', (a) => {
@@ -238,9 +281,7 @@ function connectSocket() {
 function kicked() {
   if (typeof shareStream !== 'undefined' && shareStream) stopShare();
   socket?.disconnect();
-  delete tokens[code];
-  store.set('lb_tokens', tokens);
-  store.set('lb_last_token', null);
+  forget();
   allowLeave = true;
   alert('선생님이 입장 정보를 초기화했습니다. 다시 입장해 주세요.');
   location.href = code ? `/student?code=${code}` : '/';
@@ -555,14 +596,19 @@ function fileItem(m) {
 
 // ------------------------------------------------------------ 내 전용 입장 링크
 const myLink = () => `${location.origin}/s/${me.student.key}`;
+// 링크 안내 숨김 여부: 공용 PC 에서는 이번 접속에서만 기억
+const linkPref = () => (sharedPc ? session : store);
 function renderMyLink() {
-  $('#myLinkCard').classList.toggle('hidden', !me.student.key || store.get('lb_link_hidden') === true);
+  $('#myLinkCard').classList.toggle('hidden', !me.student.key || linkPref().get('lb_link_hidden') === true);
+  $('#myLinkHint').textContent = sharedPc
+    ? '공용 PC에는 저장하지 말고, 📱 QR을 휴대폰으로 찍어 저장해 두세요. 다음부터 입장 코드 없이 바로 들어옵니다.'
+    : '즐겨찾기·홈 화면에 추가하면 입장 코드 없이 언제든 바로 들어옵니다. 다른 사람에게 보여 주지 마세요.';
 }
 $('#myLinkCopy').addEventListener('click', async () => {
   try { await navigator.clipboard.writeText(myLink()); toast('내 전용 링크를 복사했습니다. 즐겨찾기나 메모에 저장해 두세요.', 'ok', 4000); } catch { await promptDialog('아래 링크를 길게 눌러 복사하세요.', myLink(), { ok: '닫기' }); }
 });
-$('#myLinkHide').addEventListener('click', () => { store.set('lb_link_hidden', true); renderMyLink(); });
-$('#myLinkShow').addEventListener('click', (e) => { e.preventDefault(); store.set('lb_link_hidden', false); renderMyLink(); $('#myLinkCard').scrollIntoView({ behavior: 'smooth' }); });
+$('#myLinkHide').addEventListener('click', () => { linkPref().set('lb_link_hidden', true); renderMyLink(); });
+$('#myLinkShow').addEventListener('click', (e) => { e.preventDefault(); linkPref().set('lb_link_hidden', false); renderMyLink(); $('#myLinkCard').scrollIntoView({ behavior: 'smooth' }); });
 
 // ------------------------------------------------------------ 화면 공유 (학생이 직접 시작, 고른 화면만, 언제든 중지)
 // 영상은 WebRTC 로 선생님 PC 에 바로 가고, 직접 연결이 안 되면 1초마다 화면 사진을 서버를 거쳐 보냄
@@ -700,3 +746,30 @@ function bindScreen() {
     toast('다른 기기에서 화면 공유를 시작해 이 기기의 공유를 멈췄습니다.');
   });
 }
+
+// ------------------------------------------------------------ 나가기 (이 기기에서 입장 정보 지우기)
+$('#leaveBtn').addEventListener('click', async () => {
+  const msg = sharedPc
+    ? '이 PC에서 나갈까요?\n다음 사람이 내 자리로 들어올 수 없도록 입장 정보를 지웁니다.\n제출한 과제는 그대로 남아 있습니다.'
+    : '이 기기에서 나갈까요?\n다시 들어오려면 내 전용 링크나 입장 코드·이름·PIN이 필요합니다.\n제출한 과제는 그대로 남아 있습니다.';
+  if (!(await confirmDialog(msg, { ok: '🚪 나가기' }))) return;
+  if (shareStream) stopShare();
+  socket?.disconnect();
+  forget();
+  allowLeave = true;
+  location.href = me?.course?.open && code ? `/student?code=${code}` : '/';
+});
+
+// ------------------------------------------------------------ 내 전용 링크 QR (휴대폰으로 찍어 저장)
+$('#myLinkQr').addEventListener('click', () => {
+  const url = myLink();
+  const close = () => bg.remove();
+  const bg = h('div', { class: 'modal-bg', onclick: (e) => { if (e.target === bg) close(); } },
+    h('div', { class: 'modal qr-modal' },
+      h('h3', { style: 'margin:0' }, '📱 휴대폰으로 찍어 저장하세요'),
+      h('p', { class: 'muted small', style: 'margin:6px 0 0' }, '카메라로 찍고 열린 페이지를 즐겨찾기·홈 화면에 추가하면, 다음부터 이 링크로 바로 들어옵니다.'),
+      h('img', { src: `/api/qr?text=${encodeURIComponent(url)}`, alt: '내 전용 링크 QR' }),
+      h('div', { class: 'qr-url' }, '다른 사람이 찍지 않게 화면을 가려 주세요'),
+      h('button', { class: 'btn primary block', style: 'margin-top:12px', onclick: close }, '닫기')));
+  document.body.append(bg);
+});

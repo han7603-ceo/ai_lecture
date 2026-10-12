@@ -213,7 +213,7 @@ function publicStudent(s) {
 function publicCourse(c) {
   return {
     id: c.id, name: c.name, code: c.code, maxStudents: c.maxStudents,
-    open: c.open !== false, createdAt: c.createdAt,
+    open: c.open !== false, createdAt: c.createdAt, sharedPc: !!c.sharedPc,
     sessionStartedAt: c.sessionStartedAt || null, sessionEndedAt: c.sessionEndedAt || null,
   };
 }
@@ -467,7 +467,7 @@ app.post('/api/join/check', (req, res) => {
   const count = studentsOf(c.id).length;
   res.json({
     siteTitle: state.siteTitle, courseName: c.name, open: c.open !== false,
-    full: count >= c.maxStudents,
+    full: count >= c.maxStudents, sharedPc: !!c.sharedPc,
   });
 });
 
@@ -531,7 +531,7 @@ app.post('/api/join', (req, res) => {
     ensureKey(same);
     saveState();
     pushStudent(same);
-    return res.json({ token: same.token, studentId: same.id, key: same.key, reclaimed: true });
+    return res.json({ token: same.token, studentId: same.id, key: same.key, reclaimed: true, sharedPc: !!c.sharedPc });
   }
   if (c.open === false) return res.status(403).json({ error: '현재 입장이 마감된 과목입니다.' });
   if (list.length >= c.maxStudents) return res.status(403).json({ error: `정원(${c.maxStudents}명)이 가득 찼습니다.` });
@@ -546,7 +546,7 @@ app.post('/api/join', (req, res) => {
   state.students[s.id] = s;
   saveState();
   pushStudent(s);
-  res.json({ token: s.token, studentId: s.id, key: s.key });
+  res.json({ token: s.token, studentId: s.id, key: s.key, sharedPc: !!c.sharedPc });
 });
 
 // 개인 입장 링크(/s/<key>): 입장 코드·이름·PIN 없이 본인 자리로 (기기 여러 대에서 같이 사용 가능)
@@ -555,7 +555,8 @@ app.post('/api/join/key', (req, res) => {
   const k = String(req.body?.key || '');
   const s = k && Object.values(state.students).find((x) => x.key === k);
   if (!s || !state.courses[s.courseId]) return res.status(404).json({ error: '개인 링크가 올바르지 않거나 다시 만들어졌습니다. 선생님께 새 링크를 받거나, 입장 코드와 이름·PIN으로 들어오세요.' });
-  res.json({ token: s.token, studentId: s.id, key: s.key, code: state.courses[s.courseId].code });
+  const c = state.courses[s.courseId];
+  res.json({ token: s.token, studentId: s.id, key: s.key, code: c.code, sharedPc: !!c.sharedPc });
 });
 
 // 교사: PIN 초기화(다음 입장 때 새로 정함) / 개인 링크 다시 만들기(예전 링크 무효)
@@ -920,6 +921,7 @@ app.patch('/api/master/courses/:id', requireMaster, (req, res) => {
     c.maxStudents = n;
   }
   if (req.body.open !== undefined) c.open = !!req.body.open;
+  if (req.body.sharedPc !== undefined) c.sharedPc = !!req.body.sharedPc; // 공용 PC 모드: 학생 기기에 입장 정보를 남기지 않음
   saveState();
   toMasters('course:update', publicCourse(c));
   toCourse(c.id, 'course:update', publicCourse(c));

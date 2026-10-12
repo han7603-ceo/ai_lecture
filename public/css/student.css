@@ -124,3 +124,14 @@
 @keyframes share-blink { 50% { opacity: .25; } }
 .share-btn { flex: none; margin-right: 8px; }
 @media (max-width: 520px) { .share-btn .share-btn-text { display: none; } }
+
+/* 공용 PC */
+.shared-row { display: flex; align-items: flex-start; gap: 8px; margin: 4px 0 10px; text-align: left; cursor: pointer; font-size: 14px; }
+.shared-row input { margin-top: 3px; width: 18px; height: 18px; flex: none; accent-color: var(--primary); }
+.shared-row.locked { opacity: .85; }
+.leave-btn { flex: none; margin-right: 8px; }
+body.shared-pc .leave-btn { background: var(--danger-weak); border-color: var(--danger); color: var(--danger); font-weight: 800; }
+@media (max-width: 520px) { body:not(.shared-pc) .leave-btn .leave-text { display: none; } }
+.qr-modal { width: min(360px, 100%); text-align: center; padding: 20px; }
+.qr-modal img { width: 260px; height: 260px; max-width: 100%; margin: 10px auto; display: block; }
+.qr-modal .qr-url { font-size: 11px; color: var(--muted); word-break: break-all; }
