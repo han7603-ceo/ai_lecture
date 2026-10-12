@@ -115,3 +115,12 @@
 .icon-btn.locked { cursor: default; opacity: .6; }
 .notice.warn { background: var(--warn-weak); color: var(--text); border-color: var(--warn); }
 #assignClosedNotice { margin-bottom: 10px; }
+
+/* 화면 공유 중 표시 (상단 고정) */
+.share-bar { position: sticky; top: 8px; z-index: 30; display: flex; gap: 10px; align-items: center; padding: 10px 14px; border-radius: 12px; background: var(--danger); color: #fff; font-weight: 700; box-shadow: 0 6px 18px rgba(0,0,0,.18); }
+.share-bar .share-text { flex: 1; min-width: 0; }
+.share-bar .btn { background: #fff; color: var(--danger); border-color: #fff; }
+.share-dot { width: 10px; height: 10px; border-radius: 50%; background: #fff; flex: none; animation: share-blink 1.2s infinite; }
+@keyframes share-blink { 50% { opacity: .25; } }
+.share-btn { flex: none; margin-right: 8px; }
+@media (max-width: 520px) { .share-btn .share-btn-text { display: none; } }

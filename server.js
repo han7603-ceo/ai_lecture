@@ -178,6 +178,18 @@ const sofficePath = findSoffice();
 // 직렬화 (클라이언트에 보낼 형태)
 // ---------------------------------------------------------------------------
 const online = new Map(); // studentId -> 접속 소켓 수
+// 학생 화면 공유: 학생이 직접 공유를 시작했을 때만. 영상은 WebRTC 로 교사에게 바로 가고, 서버는 연결 정보만 중계
+const sharers = new Map(); // studentId -> 화면을 공유 중인 학생 소켓 id
+const watchers = new Map(); // studentId -> 보고 있는 교사 소켓 id 집합
+function parseIceServers() {
+  try {
+    const v = JSON.parse(process.env.ICE_SERVERS || 'null');
+    if (Array.isArray(v) && v.length) return v;
+  } catch { /* 기본값 사용 */ }
+  return [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
+}
+const ICE_SERVERS = parseIceServers();
+const MAX_FRAME_BYTES = 900 * 1024;
 const masterTokens = new Set();
 
 function publicFile(f) {
@@ -193,6 +205,7 @@ function publicStudent(s) {
     online: (online.get(s.id) || 0) > 0,
     hasPin: !!s.pinHash,
     pinLocked: (s.pinLockUntil || 0) > Date.now(),
+    sharing: sharers.has(s.id),
     key: s.key, // 개인 입장 링크 (교사·본인에게만 — 참관자에게는 지움)
     files: s.files.map(publicFile),
   };
@@ -288,6 +301,7 @@ io.use((socket, next) => {
 io.on('connection', (socket) => {
   if (socket.data.role === 'master') {
     socket.join('master');
+    bindMasterScreen(socket);
     return;
   }
   if (socket.data.role === 'code') {
@@ -309,6 +323,7 @@ io.on('connection', (socket) => {
   s.lastSeen = Date.now();
   pushStudent(s);
 
+  bindStudentScreen(socket, sid);
   socket.on('disconnect', () => {
     const n = (online.get(sid) || 1) - 1;
     if (n <= 0) online.delete(sid); else online.set(sid, n);
@@ -320,6 +335,78 @@ io.on('connection', (socket) => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// 학생 화면 공유 중계 (교사만 볼 수 있음, 학생이 공유를 시작해야만 보임)
+// ---------------------------------------------------------------------------
+const isObj = (v) => v && typeof v === 'object' && !Array.isArray(v);
+function stopWatching(sid, viewerId, notify = true) {
+  const set = watchers.get(sid);
+  if (!set?.delete(viewerId)) return;
+  if (!set.size) watchers.delete(sid);
+  const sharer = sharers.get(sid);
+  if (notify && sharer) io.to(sharer).emit('screen:unwatch', { viewer: viewerId });
+}
+function bindMasterScreen(socket) {
+  const student = (id) => (typeof id === 'string' ? state.students[id] : null);
+  // 학생에게 화면 공유 요청 (학생이 수락해야 시작)
+  socket.on('screen:request', ({ studentId } = {}) => {
+    if (student(studentId)) toStudent(studentId, 'screen:request', {});
+  });
+  socket.on('screen:watch', ({ studentId } = {}) => {
+    const sharer = student(studentId) && sharers.get(studentId);
+    if (!sharer) return socket.emit('screen:stopped', { studentId });
+    if (!watchers.has(studentId)) watchers.set(studentId, new Set());
+    watchers.get(studentId).add(socket.id);
+    io.to(sharer).emit('screen:watch', { viewer: socket.id });
+  });
+  // 직접 연결이 안 될 때: 학생이 1초마다 화면 사진을 보냄
+  socket.on('screen:fallback', ({ studentId } = {}) => {
+    const sharer = sharers.get(studentId);
+    if (sharer && watchers.get(studentId)?.has(socket.id)) io.to(sharer).emit('screen:fallback', { viewer: socket.id });
+  });
+  socket.on('screen:signal', ({ studentId, data } = {}) => {
+    const sharer = sharers.get(studentId);
+    if (sharer && isObj(data) && watchers.get(studentId)?.has(socket.id)) io.to(sharer).emit('screen:signal', { viewer: socket.id, data });
+  });
+  socket.on('screen:unwatch', ({ studentId } = {}) => stopWatching(studentId, socket.id));
+  socket.on('disconnect', () => { for (const sid of [...watchers.keys()]) stopWatching(sid, socket.id); });
+}
+function bindStudentScreen(socket, sid) {
+  const allowed = (viewer) => sharers.get(sid) === socket.id && watchers.get(sid)?.has(viewer);
+  const stopSharing = () => {
+    if (sharers.get(sid) !== socket.id) return;
+    sharers.delete(sid);
+    for (const v of watchers.get(sid) || []) io.to(v).emit('screen:stopped', { studentId: sid });
+    watchers.delete(sid);
+    const st = state.students[sid];
+    if (st) pushStudent(st);
+  };
+  socket.on('screen:state', ({ sharing } = {}) => {
+    if (sharing) {
+      const prev = sharers.get(sid);
+      if (prev && prev !== socket.id) io.to(prev).emit('screen:replaced', {}); // 다른 기기에서 새로 공유하면 예전 공유는 끝냄
+      sharers.set(sid, socket.id);
+      for (const v of watchers.get(sid) || []) io.to(v).emit('screen:stopped', { studentId: sid });
+      watchers.delete(sid);
+      const st = state.students[sid];
+      if (st) pushStudent(st);
+    } else stopSharing();
+  });
+  socket.on('screen:decline', () => {
+    const st = state.students[sid];
+    if (st) toMastersOnly('screen:declined', { studentId: sid });
+  });
+  socket.on('screen:signal', ({ viewer, data } = {}) => {
+    if (allowed(viewer) && isObj(data)) io.to(viewer).emit('screen:signal', { studentId: sid, data });
+  });
+  socket.on('screen:frame', ({ viewer, buf } = {}) => {
+    if (!allowed(viewer) || !Buffer.isBuffer(buf) || buf.length > MAX_FRAME_BYTES) return;
+    io.to(viewer).volatile.emit('screen:frame', { studentId: sid, buf });
+  });
+  socket.on('disconnect', stopSharing);
+}
+const toMastersOnly = (event, payload) => io.to('master').emit(event, payload);
 
 // ---------------------------------------------------------------------------
 // 미들웨어
@@ -505,6 +592,7 @@ app.get('/api/student/me', requireStudent, (req, res) => {
     canConvert,
     materials: materialsFor(req.student).map((m) => studentMaterial(m, req.student.id)),
     assignments: assignmentsOf(req.course.id).map(publicAssignment),
+    iceServers: ICE_SERVERS,
   });
 });
 
@@ -767,6 +855,7 @@ app.get('/api/master/state', requireMaster, (req, res) => {
     students: Object.values(state.students).map(publicStudent),
     materials: Object.values(state.materials).map(publicMaterial),
     assignments: Object.values(state.assignments).map(publicAssignment),
+    iceServers: ICE_SERVERS,
     publicUrl,
     publicUrlSource,
     lanUrls: lanUrls(),

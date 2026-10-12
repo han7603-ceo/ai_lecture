@@ -115,6 +115,7 @@
         <aside class="detail-files">
           <div class="detail-actions">
             <a class="btn sm primary master-only" id="dZip">🗜️ 이 학생 ZIP</a>
+            <button class="btn sm master-only" id="dScreen" title="학생 화면 보기 (학생이 공유를 수락해야 보임)">🖥️ 화면 보기</button>
             <button class="btn sm master-only" id="dSendMat">📤 자료 보내기</button>
             <button class="btn sm master-only" id="dKick">🚪 학생 삭제</button>
           </div>
@@ -139,6 +140,25 @@
           </div>
           <div id="dpBox" class="preview"></div>
         </section>
+      </div>
+    </div>
+  </div>
+
+  <!-- 학생 화면 보기 -->
+  <div class="modal-bg hidden" id="screenModal">
+    <div class="modal screen">
+      <div class="modal-head">
+        <span class="seat-no" id="scSeat"></span>
+        <strong id="scName"></strong>
+        <span class="muted small" id="scStatus"></span>
+        <div class="spacer"></div>
+        <button class="btn sm" id="scFull">⛶ 전체화면</button>
+        <button class="icon-btn" id="scClose" aria-label="닫기">✕</button>
+      </div>
+      <div class="screen-box" id="scBox">
+        <video id="scVideo" autoplay playsinline muted></video>
+        <img id="scImg" class="hidden" alt="학생 화면">
+        <div class="screen-wait" id="scWait">학생 화면을 기다리는 중…</div>
       </div>
     </div>
   </div>

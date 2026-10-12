@@ -125,10 +125,16 @@ function connectSocket() {
     }
   });
   socket.on('disconnect', (reason) => { if (GUEST && reason === 'io server disconnect') guestExpired(); });
-  socket.on('connect', async () => { await loadState(); renderAll(); });
+  socket.on('connect', async () => {
+    await loadState();
+    renderAll();
+    if (screen && !screen.ended) openScreen(screen.studentId); // 다시 연결되면 화면 보기도 다시 연결
+  });
   socket.on('student:update', (s) => {
     const prev = students.get(s.id);
     students.set(s.id, s);
+    // 요청한 학생이 공유를 시작했거나, 보던 학생이 공유를 다시 시작하면 바로 열기
+    if (s.sharing && ((!prev?.sharing && screenRequested.delete(s.id)) || (screen?.studentId === s.id && screen.ended))) openScreen(s.id);
     if (s.courseId !== courseId) return;
     if (!prev) toast(`${s.seat}번 ${s.name} 학생이 입장했습니다.`);
     else if (s.files.length > prev.files.length) toast(`📥 ${s.seat}번 ${s.name} — 새 파일 ${s.files.length - prev.files.length}개 제출`, 'ok');
@@ -165,6 +171,7 @@ function connectSocket() {
     toast(`📬 인증 메일 도착${who ? ` — ${who.label}` : ''}${m.code ? ` · ${m.code}` : ''}`, 'ok', 5000);
     renderInbox();
   });
+  if (!GUEST) bindScreenSocket();
   socket.on('guests:update', (list) => { S.guests = list; renderGuests(); });
   socket.on('inbox:remove', ({ ids }) => { S.inbox = S.inbox.filter((m) => !ids.includes(m.id)); renderInbox(); });
   socket.on('inbox:imap', (st) => { S.inboxImap = st; renderInbox(); });
@@ -421,6 +428,7 @@ function seatBox(s) {
       h('span', { class: 'seat-no' }, s.seat),
       h('span', { class: `dot ${s.online ? 'on' : ''}` }),
       h('span', { class: 'seat-name' }, highlight(s.name)),
+      s.sharing ? h('span', { class: 'share-badge', title: '화면 공유 중 — 눌러서 크게 보기에서 확인' }, '🖥️') : null,
       fresh.size ? h('span', { class: 'new-badge' }, `NEW ${fresh.size}`) : null),
     body,
     h('div', { class: 'seat-foot' },
@@ -510,6 +518,7 @@ $('#detailModal').addEventListener('click', (e) => { if (e.target.id === 'detail
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     if (!$('#matPvModal').classList.contains('hidden')) return closeMatPreview();
+    if (screen) return closeScreen();
     closeDetail(); closeModal('#joinModal'); closeModal('#settingsModal'); closeModal('#materialsModal'); closeModal('#inboxModal'); closeModal('#assignModal');
   }
   if (detailId && !e.target.closest('input, textarea, select')) {
@@ -528,6 +537,7 @@ function renderDetail() {
   $('#dSub').textContent = `${s.online ? '접속중' : `마지막 접속 ${timeAgo(s.lastSeen)}`} · 입장 ${clock(s.joinedAt)} · 파일 ${s.files.length}개`;
   $('#dPin').textContent = s.pinLocked ? '🔒 PIN 잠김 (15분)' : s.hasPin ? 'PIN 설정됨' : 'PIN 없음';
   $('#dPin').classList.toggle('locked', !!s.pinLocked);
+  $('#dScreen').textContent = s.sharing ? '🖥️ 화면 보기 · 공유 중' : '🖥️ 화면 요청';
   $('#dZip').href = `/api/master/students/${s.id}/zip?t=${encodeURIComponent(token)}`;
   $('#dZip').classList.toggle('hidden', !s.files.length);
 
@@ -806,6 +816,118 @@ $('#joinClose').addEventListener('click', () => closeModal('#joinModal'));
 function closeModal(sel) { $(sel).classList.add('hidden'); }
 for (const id of ['#joinModal', '#settingsModal', '#materialsModal', '#matPvModal', '#inboxModal', '#assignModal']) {
   $(id).addEventListener('click', (e) => { if (e.target.id === id.slice(1) || e.target.closest('[data-close]')) closeModal(id); });
+}
+
+// ------------------------------------------------------------ 학생 화면 보기 (학생이 공유를 수락해야 보임)
+let screen = null; // { studentId, pc, timer, mode: 'rtc' | 'frames', imgUrl, ended }
+const screenRequested = new Set(); // 공유를 요청한 학생 → 공유가 시작되면 자동으로 열기
+
+$('#dScreen').addEventListener('click', () => {
+  const s = students.get(detailId);
+  if (!s) return;
+  if (s.sharing) return openScreen(s.id);
+  if (!s.online) return toast('학생이 접속 중이 아닙니다.', 'error');
+  socket.emit('screen:request', { studentId: s.id });
+  screenRequested.add(s.id);
+  toast(`${s.name} 학생 화면에 공유 요청을 보냈습니다. 학생이 수락하면 바로 열립니다.`, 'ok', 4000);
+});
+function setScreenWait(text) {
+  $('#scWait').textContent = text || '';
+  $('#scWait').classList.toggle('hidden', !text);
+}
+function openScreen(studentId) {
+  closeScreen(true, false);
+  const s = students.get(studentId);
+  if (!s) return;
+  $('#scSeat').textContent = `${s.seat}번`;
+  $('#scName').textContent = s.name;
+  $('#scStatus').textContent = '연결 중…';
+  $('#scVideo').srcObject = null;
+  $('#scVideo').classList.remove('hidden');
+  $('#scImg').classList.add('hidden');
+  $('#scImg').removeAttribute('src');
+  setScreenWait('학생 화면을 기다리는 중…');
+  $('#screenModal').classList.remove('hidden');
+  const pc = new RTCPeerConnection({ iceServers: S.iceServers });
+  screen = { studentId, pc, mode: 'rtc' };
+  pc.ontrack = (e) => { $('#scVideo').srcObject = e.streams[0]; };
+  pc.onicecandidate = (e) => { if (e.candidate) socket.emit('screen:signal', { studentId, data: { candidate: e.candidate.toJSON() } }); };
+  pc.onconnectionstatechange = () => {
+    if (screen?.pc !== pc) return;
+    if (pc.connectionState === 'connected') {
+      clearTimeout(screen.timer);
+      $('#scStatus').textContent = '실시간';
+      setScreenWait('');
+    }
+    if (pc.connectionState === 'failed') useFrames();
+  };
+  // 학교 방화벽 등으로 직접 연결이 안 되면 사진 모드로
+  screen.timer = setTimeout(() => { if (screen?.pc === pc && pc.connectionState !== 'connected') useFrames(); }, 8000);
+  socket.emit('screen:watch', { studentId });
+}
+function useFrames() {
+  if (!screen || screen.mode === 'frames' || screen.ended) return;
+  clearTimeout(screen.timer);
+  screen.pc?.close();
+  screen.pc = null;
+  screen.mode = 'frames';
+  $('#scStatus').textContent = '사진 모드 · 1초마다 갱신 (직접 연결이 막힌 네트워크)';
+  $('#scVideo').classList.add('hidden');
+  $('#scImg').classList.remove('hidden');
+  socket.emit('screen:fallback', { studentId: screen.studentId });
+}
+function closeScreen(notify = true, hide = true) {
+  if (screen) {
+    clearTimeout(screen.timer);
+    screen.pc?.close();
+    if (screen.imgUrl) URL.revokeObjectURL(screen.imgUrl);
+    if (notify && !screen.ended) socket.emit('screen:unwatch', { studentId: screen.studentId });
+    screen = null;
+  }
+  $('#scVideo').srcObject = null;
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  if (hide) $('#screenModal').classList.add('hidden');
+}
+$('#scClose').addEventListener('click', () => closeScreen());
+$('#screenModal').addEventListener('click', (e) => { if (e.target.id === 'screenModal') closeScreen(); });
+$('#scFull').addEventListener('click', () => $('#scBox').requestFullscreen?.().catch(() => {}));
+function bindScreenSocket() {
+  socket.on('screen:signal', async ({ studentId, data }) => {
+    const pc = screen?.studentId === studentId ? screen.pc : null;
+    if (!pc) return;
+    try {
+      if (data.sdp) {
+        await pc.setRemoteDescription(data.sdp);
+        if (data.sdp.type === 'offer') {
+          await pc.setLocalDescription(await pc.createAnswer());
+          socket.emit('screen:signal', { studentId, data: { sdp: pc.localDescription.toJSON() } });
+        }
+      } else if (data.candidate) await pc.addIceCandidate(data.candidate);
+    } catch { /* 늦게 온 연결 후보 등은 무시 */ }
+  });
+  socket.on('screen:frame', ({ studentId, buf }) => {
+    if (screen?.studentId !== studentId || screen.mode !== 'frames') return;
+    const url = URL.createObjectURL(new Blob([buf], { type: 'image/jpeg' }));
+    $('#scImg').src = url;
+    if (screen.imgUrl) URL.revokeObjectURL(screen.imgUrl);
+    screen.imgUrl = url;
+    setScreenWait('');
+  });
+  socket.on('screen:stopped', ({ studentId }) => {
+    if (screen?.studentId !== studentId) return;
+    clearTimeout(screen.timer);
+    screen.pc?.close();
+    screen.pc = null;
+    screen.ended = true;
+    $('#scVideo').srcObject = null;
+    $('#scImg').removeAttribute('src');
+    $('#scStatus').textContent = '공유 종료';
+    setScreenWait('학생이 화면 공유를 멈췄습니다.\n학생이 다시 공유하면 자동으로 이어집니다.');
+  });
+  socket.on('screen:declined', ({ studentId }) => {
+    if (!screenRequested.delete(studentId)) return;
+    toast(`${students.get(studentId)?.name || '학생'} 학생이 화면 공유를 하지 않았습니다.`, 'error', 4000);
+  });
 }
 
 // ------------------------------------------------------------ 과제
