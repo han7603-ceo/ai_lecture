@@ -137,3 +137,37 @@ export function promptDialog(message, value = '', { ok = '저장', type = 'text'
     input.select();
   });
 }
+
+// ------------------------------------------------------------ 과제 마감
+// open: 제출 가능 / late: 마감 지남(지각으로 받음) / closed: 마감
+export function assignmentState(a, now = Date.now()) {
+  if (a.closed) return 'closed';
+  if (a.dueAt && now > a.dueAt) return a.allowLate ? 'late' : 'closed';
+  return 'open';
+}
+export function fmtDue(t) {
+  return new Date(t).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', weekday: 'short', hour: '2-digit', minute: '2-digit' });
+}
+// '마감까지 2일 3시간' 같은 남은 시간
+export function remainText(t, now = Date.now()) {
+  const m = Math.max(0, Math.floor((t - now) / 60000));
+  if (m < 1) return '1분 미만';
+  const d = Math.floor(m / 1440);
+  const hr = Math.floor((m % 1440) / 60);
+  const mi = m % 60;
+  if (d) return `${d}일${hr ? ` ${hr}시간` : ''}`;
+  if (hr) return `${hr}시간${mi ? ` ${mi}분` : ''}`;
+  return `${mi}분`;
+}
+export function dueText(a, now = Date.now()) {
+  const st = assignmentState(a, now);
+  if (a.closed) return '마감됨';
+  if (!a.dueAt) return '마감 없음';
+  if (st === 'open') return `${fmtDue(a.dueAt)} 마감 · ${remainText(a.dueAt, now)} 남음`;
+  return st === 'late' ? `${fmtDue(a.dueAt)} 마감 지남 · 지각 제출 가능` : `${fmtDue(a.dueAt)} 마감됨`;
+}
+// 이 학생의 과제 제출 상태: '제출' / '지각' / '미제출'
+export function submitStatus(files) {
+  if (!files.length) return '미제출';
+  return files.every((f) => f.late) ? '지각' : '제출';
+}

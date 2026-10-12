@@ -30,6 +30,8 @@ const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
 const MATERIAL_DIR = path.join(DATA_DIR, 'materials'); // 교사가 학생에게 보낸 자료
 const MAX_FILE_MB = Number(process.env.MAX_FILE_MB) || 300;
+// 제출현황.csv 의 시각 표기 (서버가 UTC 로 돌아도 한국 시간으로)
+const TIME_ZONE = process.env.TZ_DISPLAY || 'Asia/Seoul';
 const MAX_FILES_PER_UPLOAD = 20;
 const MAX_STUDENTS = 50;
 const DEFAULT_PASSWORD = 'admin1234';
@@ -78,6 +80,7 @@ function loadState() {
     s.materials ||= {};
     s.guests ||= {};
     s.mailboxes ||= {};
+    s.assignments ||= {};
     return s;
   } catch {
     return {
@@ -88,6 +91,7 @@ function loadState() {
       materials: {},
       guests: {},
       mailboxes: {},
+      assignments: {},
     };
   }
 }
@@ -179,7 +183,7 @@ const masterTokens = new Set();
 function publicFile(f) {
   return {
     id: f.id, kind: f.kind || 'file', url: f.url || null, name: f.name, ext: f.ext, size: f.size, mime: f.mime,
-    uploadedAt: f.uploadedAt,
+    uploadedAt: f.uploadedAt, assignmentId: f.assignmentId || null, late: !!f.late,
   };
 }
 function publicStudent(s) {
@@ -203,6 +207,19 @@ function publicCourse(c) {
 const studentsOf = (courseId) =>
   Object.values(state.students).filter((s) => s.courseId === courseId).sort((a, b) => a.seat - b.seat);
 
+// 과제: 과목마다 여러 개. 마감(dueAt)이 지나면 제출을 막고, allowLate 면 받되 '지각'으로 표시
+const assignmentsOf = (courseId) =>
+  Object.values(state.assignments).filter((a) => a.courseId === courseId).sort((a, b) => a.createdAt - b.createdAt);
+function assignmentState(a, now = Date.now()) {
+  if (a.closed) return 'closed';
+  if (a.dueAt && now > a.dueAt) return a.allowLate ? 'late' : 'closed';
+  return 'open';
+}
+const publicAssignment = (a) => ({
+  id: a.id, courseId: a.courseId, title: a.title, desc: a.desc || '', dueAt: a.dueAt || null,
+  allowLate: !!a.allowLate, closed: !!a.closed, createdAt: a.createdAt,
+});
+
 // ---------------------------------------------------------------------------
 // 서버 / 소켓
 // ---------------------------------------------------------------------------
@@ -221,7 +238,7 @@ const guestByToken = (t) => {
 };
 const guestSees = (g, courseId) => !g.courseId || g.courseId === courseId;
 const guestStudent = ({ key, ...rest }) => rest;
-const GUEST_EVENTS = new Set(['student:update', 'student:remove', 'course:update', 'course:remove', 'material:update', 'material:remove', 'site:update', 'config:update']);
+const GUEST_EVENTS = new Set(['student:update', 'student:remove', 'course:update', 'course:remove', 'material:update', 'material:remove', 'assignment:update', 'assignment:remove', 'site:update', 'config:update']);
 const guestRooms = () => [...io.sockets.adapter.rooms.keys()].filter((r) => r.startsWith('guest:'));
 const toMasters = (event, payload) => {
   io.to('master').emit(event, payload);
@@ -487,6 +504,7 @@ app.get('/api/student/me', requireStudent, (req, res) => {
     allowedExt: [...ALLOWED_EXT],
     canConvert,
     materials: materialsFor(req.student).map((m) => studentMaterial(m, req.student.id)),
+    assignments: assignmentsOf(req.course.id).map(publicAssignment),
   });
 });
 
@@ -525,8 +543,27 @@ const upload = multer({
   },
 });
 
+// 제출할 과제 확인 (없으면 '기타' 제출). 마감된 과제면 응답을 보내고 null
+function pickAssignment(req, res, id) {
+  if (!id) return { a: null, late: false };
+  const a = state.assignments[id];
+  if (!a || a.courseId !== req.course.id) {
+    res.status(404).json({ error: '과제를 찾을 수 없습니다. 새로고침해 주세요.' });
+    return null;
+  }
+  const st = assignmentState(a);
+  if (st === 'closed') {
+    res.status(403).json({ error: `'${a.title}' 과제는 마감되었습니다.` });
+    return null;
+  }
+  return { a, late: st === 'late' };
+}
+
 app.post('/api/student/upload', requireStudent, (req, res) => {
   if (req.course.open === false) return res.status(403).json({ error: '제출이 마감되었습니다.' });
+  // 업로드를 시작한 시각 기준으로 마감을 판단 (큰 파일이 마감 직후에 끝나도 정시 제출)
+  const pick = pickAssignment(req, res, req.query.a);
+  if (!pick) return;
   upload.array('files', MAX_FILES_PER_UPLOAD)(req, res, (err) => {
     if (err) {
       for (const f of req.files || []) fs.rm(f.path, { force: true }, () => {});
@@ -540,6 +577,7 @@ app.post('/api/student/upload', requireStudent, (req, res) => {
       s.files.push({
         id: f.fileId, name: f.originalname, ext: extOf(f.originalname), size: f.size,
         mime: f.mimetype, stored: path.relative(UPLOAD_DIR, f.path), uploadedAt: Date.now(),
+        assignmentId: pick.a?.id || null, late: pick.late,
       });
     }
     saveState();
@@ -559,10 +597,12 @@ app.post('/api/student/links', requireStudent, (req, res) => {
   if (req.course.open === false) return res.status(403).json({ error: '제출이 마감되었습니다.' });
   const url = normalizeUrl(req.body?.url);
   if (!url) return res.status(400).json({ error: '올바른 인터넷 주소가 아닙니다. (예: https://docs.google.com/…)' });
+  const pick = pickAssignment(req, res, req.body?.assignmentId);
+  if (!pick) return;
   const s = req.student;
   s.files.push({
     id: newId(), kind: 'link', url, name: linkTitle(url, req.body?.title), ext: 'link', size: 0,
-    mime: '', stored: null, uploadedAt: Date.now(),
+    mime: '', stored: null, uploadedAt: Date.now(), assignmentId: pick.a?.id || null, late: pick.late,
   });
   saveState();
   pushStudent(s);
@@ -581,6 +621,9 @@ async function removeFileRecord(s, fileId) {
 }
 
 app.delete('/api/student/files/:fileId', requireStudent, async (req, res) => {
+  const f = req.student.files.find((x) => x.id === req.params.fileId);
+  const a = f?.assignmentId && state.assignments[f.assignmentId];
+  if (a && assignmentState(a) === 'closed') return res.status(403).json({ error: '마감된 과제의 제출물은 지울 수 없습니다.' });
   if (!(await removeFileRecord(req.student, req.params.fileId))) return res.status(404).json({ error: '파일이 없습니다.' });
   saveState();
   pushStudent(req.student);
@@ -723,6 +766,7 @@ app.get('/api/master/state', requireMaster, (req, res) => {
     courses: Object.values(state.courses).sort((a, b) => a.createdAt - b.createdAt).map(publicCourse),
     students: Object.values(state.students).map(publicStudent),
     materials: Object.values(state.materials).map(publicMaterial),
+    assignments: Object.values(state.assignments).map(publicAssignment),
     publicUrl,
     publicUrlSource,
     lanUrls: lanUrls(),
@@ -865,6 +909,7 @@ app.delete('/api/master/courses/:id', requireMaster, async (req, res) => {
   for (const s of studentsOf(c.id)) await removeStudent(s);
   await fsp.rm(path.join(UPLOAD_DIR, c.id), { recursive: true, force: true });
   for (const m of materialsOfCourse(c.id)) delete state.materials[m.id];
+  for (const a of assignmentsOf(c.id)) delete state.assignments[a.id];
   await fsp.rm(path.join(MATERIAL_DIR, c.id), { recursive: true, force: true });
   delete state.courses[c.id];
   for (const g of Object.values(state.guests)) if (g.courseId === c.id) dropGuest(g.id);
@@ -907,6 +952,71 @@ app.delete('/api/master/students/:id/files/:fileId', requireMaster, async (req, 
 //   target: 'all'(과목 전체, 나중에 입장한 학생 포함) 또는 학생 id 배열
 //   seen:   { studentId: 처음 연 시각 } — 교사 화면의 '확인' 표시
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// 과제 (교사가 만들고, 학생은 과제를 골라 제출)
+// ---------------------------------------------------------------------------
+const cleanMultiline = (s, max) => String(s ?? '').replace(/\r\n?/g, '\n').replace(/[\u0000-\u0009\u000b-\u001f]/g, '').trim().slice(0, max);
+function readAssignment(body, a) {
+  if ('title' in body || !a) {
+    const title = cleanText(body.title, 60);
+    if (!title) return '과제 이름을 입력해 주세요.';
+    a.title = title;
+  }
+  if ('desc' in body) a.desc = cleanMultiline(body.desc, 500);
+  if ('dueAt' in body) {
+    const t = body.dueAt == null || body.dueAt === '' ? null : Number(body.dueAt);
+    if (t !== null && !(Number.isFinite(t) && t > 0)) return '마감 시각이 올바르지 않습니다.';
+    a.dueAt = t;
+  }
+  if ('allowLate' in body) a.allowLate = !!body.allowLate;
+  if ('closed' in body) a.closed = !!body.closed;
+  return null;
+}
+function pushAssignment(a) {
+  const pa = publicAssignment(a);
+  toMasters('assignment:update', pa);
+  toCourse(a.courseId, 'assignment:update', pa);
+}
+
+app.post('/api/master/courses/:id/assignments', requireMaster, (req, res) => {
+  const c = getCourse(req, res);
+  if (!c) return;
+  const a = { id: newId(), courseId: c.id, title: '', desc: '', dueAt: null, allowLate: false, closed: false, createdAt: Date.now() };
+  const err = readAssignment(req.body || {}, a);
+  if (err) return res.status(400).json({ error: err });
+  state.assignments[a.id] = a;
+  saveState();
+  pushAssignment(a);
+  res.json({ assignment: publicAssignment(a) });
+});
+app.patch('/api/master/assignments/:id', requireMaster, (req, res) => {
+  const a = state.assignments[req.params.id];
+  if (!a) return res.status(404).json({ error: '과제를 찾을 수 없습니다.' });
+  const draft = { ...a };
+  const err = readAssignment(req.body || {}, draft);
+  if (err) return res.status(400).json({ error: err });
+  Object.assign(a, draft);
+  saveState();
+  pushAssignment(a);
+  res.json({ assignment: publicAssignment(a) });
+});
+// 과제 삭제: 제출물은 지우지 않고 '기타' 제출로 남김
+app.delete('/api/master/assignments/:id', requireMaster, (req, res) => {
+  const a = state.assignments[req.params.id];
+  if (!a) return res.status(404).json({ error: '과제를 찾을 수 없습니다.' });
+  delete state.assignments[a.id];
+  for (const s of studentsOf(a.courseId)) {
+    let changed = false;
+    for (const f of s.files) if (f.assignmentId === a.id) { f.assignmentId = null; f.late = false; changed = true; }
+    if (changed) { pushStudent(s); toStudent(s.id, 'student:update', publicStudent(s)); }
+  }
+  saveState();
+  const payload = { id: a.id, courseId: a.courseId };
+  toMasters('assignment:remove', payload);
+  toCourse(a.courseId, 'assignment:remove', payload);
+  res.json({ ok: true });
+});
+
 const materialsOfCourse = (courseId) => Object.values(state.materials).filter((m) => m.courseId === courseId);
 // archived: 새 수업을 시작하면 지난 수업 자료는 학생 화면에서 내림 (교사 화면 '지난 수업 자료'에 보관, 다시 보내기 가능)
 const canSeeMaterial = (m, s) => !m.archived && m.courseId === s.courseId && (m.target === 'all' || m.target.includes(s.id));
@@ -1327,6 +1437,7 @@ app.get('/api/guest/state', (req, res) => {
     courses: courses.sort((a, b) => a.createdAt - b.createdAt).map(publicCourse),
     students: Object.values(state.students).filter((s) => ids.has(s.courseId)).map((s) => guestStudent(publicStudent(s))),
     materials: Object.values(state.materials).filter((m) => ids.has(m.courseId)).map(publicMaterial),
+    assignments: Object.values(state.assignments).filter((a) => ids.has(a.courseId)).map(publicAssignment),
     publicUrl,
     publicUrlSource,
     lanUrls: lanUrls(),
@@ -1342,17 +1453,17 @@ app.get('/api/guest/state', (req, res) => {
 function studentFolder(s) {
   return safeFsName(`${String(s.seat).padStart(2, '0')}_${s.name}`);
 }
-function appendStudentFiles(archive, s, prefix) {
+function appendStudentFiles(archive, s, prefix, files = s.files) {
   const used = new Set();
-  const links = s.files.filter((f) => f.kind === 'link');
+  const links = files.filter((f) => f.kind === 'link');
   if (links.length) {
-    const text = links.map((f) => `${f.name}\r\n${f.url}\r\n`).join('\r\n');
+    const text = links.map((f) => `${f.late ? '[지각] ' : ''}${f.name}\r\n${f.url}\r\n`).join('\r\n');
     archive.append('\ufeff' + text, { name: `${prefix}링크.txt` });
     used.add('링크.txt');
   }
-  for (const f of s.files) {
+  for (const f of files) {
     if (f.kind === 'link') continue;
-    let name = safeFsName(f.name);
+    let name = safeFsName(`${f.late ? '[지각] ' : ''}${f.name}`);
     const base = name.replace(/(\.[^.]*)?$/, '');
     const ext = name.slice(base.length);
     for (let i = 2; used.has(name.toLowerCase()); i++) name = `${base} (${i})${ext}`;
@@ -1361,6 +1472,16 @@ function appendStudentFiles(archive, s, prefix) {
     if (fs.existsSync(abs)) archive.file(abs, { name: `${prefix}${name}`, date: new Date(f.uploadedAt) });
   }
 }
+// 과제 폴더 이름: 01_과제명 (만든 순서) / 과제 없이 낸 것은 '기타'
+const assignmentFolders = (courseId) => new Map(assignmentsOf(courseId).map((a, i) => [a.id, safeFsName(`${String(i + 1).padStart(2, '0')}_${a.title}`)]));
+const filesOf = (s, assignmentId) => s.files.filter((f) => (f.assignmentId && state.assignments[f.assignmentId] ? f.assignmentId : null) === assignmentId);
+function submitStatus(files) {
+  if (!files.length) return '미제출';
+  return files.every((f) => f.late) ? '지각' : '제출';
+}
+const csvRow = (cells) => cells.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',');
+const fmtTime = (t) => (t ? new Date(t).toLocaleString('ko-KR', { timeZone: TIME_ZONE }) : '');
+const fileLabel = (f) => `${f.late ? '[지각] ' : ''}${f.kind === 'link' ? `${f.name} (${f.url})` : f.name}`;
 function sendZip(res, zipName, fill) {
   res.attachment(zipName);
   // 이미 압축된 미디어가 대부분이라 빠른 압축 레벨 사용
@@ -1380,16 +1501,48 @@ app.get('/api/master/courses/:id/zip', requireMaster, (req, res) => {
   const c = getCourse(req, res);
   if (!c) return;
   const courseName = safeFsName(c.name);
+  const folders = assignmentFolders(c.id);
+  const list = assignmentsOf(c.id);
   sendZip(res, `${courseName}_과제_${stamp()}.zip`, (archive) => {
-    const list = studentsOf(c.id);
-    for (const s of list) {
-      if (s.files.length) appendStudentFiles(archive, s, `${courseName}/${studentFolder(s)}/`);
+    const students = studentsOf(c.id);
+    for (const s of students) {
+      if (!s.files.length) continue;
+      const base = `${courseName}/${studentFolder(s)}/`;
+      if (!folders.size) { appendStudentFiles(archive, s, base); continue; }
+      // 과제가 있으면 학생 폴더 안을 과제별로 나눔
+      for (const [id, folder] of [...folders, [null, '기타']]) {
+        const files = filesOf(s, id);
+        if (files.length) appendStudentFiles(archive, s, `${base}${folder}/`, files);
+      }
     }
-    const summary = ['자리,이름,제출 파일 수,파일 목록']
-      .concat(list.map((s) => [s.seat, s.name, s.files.length, s.files.map((f) => (f.kind === 'link' ? `${f.name} (${f.url})` : f.name)).join(' | ')]
-        .map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',')))
+    const summary = [csvRow(['자리', '이름', ...list.map((a) => a.title), '제출 파일 수', '파일 목록'])]
+      .concat(students.map((s) => csvRow([s.seat, s.name, ...list.map((a) => submitStatus(filesOf(s, a.id))),
+        s.files.length, s.files.map(fileLabel).join(' | ')])))
       .join('\r\n');
-    archive.append('﻿' + summary, { name: `${courseName}/제출현황.csv` });
+    archive.append('\ufeff' + summary, { name: `${courseName}/제출현황.csv` });
+  });
+});
+
+// 과제 하나만: 과제명/01_홍길동/… + 제출현황.csv (미제출 학생 포함)
+app.get('/api/master/assignments/:id/zip', requireMaster, (req, res) => {
+  const a = state.assignments[req.params.id];
+  const c = a && state.courses[a.courseId];
+  if (!c) return res.status(404).json({ error: '과제를 찾을 수 없습니다.' });
+  const root = safeFsName(`${c.name}_${a.title}`);
+  sendZip(res, `${root}_${stamp()}.zip`, (archive) => {
+    const students = studentsOf(c.id);
+    for (const s of students) {
+      const files = filesOf(s, a.id);
+      if (files.length) appendStudentFiles(archive, s, `${root}/${studentFolder(s)}/`, files);
+    }
+    const rows = students.map((s) => {
+      const files = filesOf(s, a.id).sort((x, y) => x.uploadedAt - y.uploadedAt);
+      return csvRow([s.seat, s.name, submitStatus(files), fmtTime(files[0]?.uploadedAt), fmtTime(files.at(-1)?.uploadedAt),
+        files.length, files.map(fileLabel).join(' | ')]);
+    });
+    const head = [csvRow(['과제', a.title]), csvRow(['마감', a.dueAt ? fmtTime(a.dueAt) : '없음']), '',
+      csvRow(['자리', '이름', '상태', '처음 제출', '마지막 제출', '파일 수', '파일 목록'])];
+    archive.append('\ufeff' + head.concat(rows).join('\r\n'), { name: `${root}/제출현황.csv` });
   });
 });
 

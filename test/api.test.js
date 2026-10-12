@@ -464,6 +464,89 @@ test('학생 PIN·개인 링크: 재입장 확인, 잠금, 교사 초기화, 링
   assert.equal(st.key, undefined);
 });
 
+test('과제별 제출·마감: 지각 허용, 마감 후 차단·삭제 금지, 과제 ZIP, 과제 삭제', async () => {
+  const { data: { token } } = await call('POST', '/api/master/login', { body: { password: 'test-pw' } });
+  const { data: { course } } = await call('POST', '/api/master/courses', { token, body: { name: '과제반', maxStudents: 5 } });
+  const other = (await call('POST', '/api/master/courses', { token, body: { name: '다른반', maxStudents: 5 } })).data.course;
+  const st = (await call('POST', '/api/join', { body: { code: course.code, name: '최학생', pin: '1234' } })).data.token;
+  await call('POST', '/api/join', { body: { code: course.code, name: '안낸학생', pin: '1234' } });
+
+  assert.equal((await call('POST', `/api/master/courses/${course.id}/assignments`, { token, body: { title: ' ' } })).status, 400);
+  assert.equal((await call('POST', `/api/master/courses/${course.id}/assignments`, { token, body: { title: 'x', dueAt: 'abc' } })).status, 400);
+  assert.equal((await call('POST', `/api/master/courses/${course.id}/assignments`, { student: st, body: { title: 'x' } })).status, 401);
+  const mk = async (body, cid = course.id) => (await call('POST', `/api/master/courses/${cid}/assignments`, { token, body })).data.assignment;
+  const open = await mk({ title: '포스터 시안', desc: 'A4\n세로', dueAt: Date.now() + 3600e3 });
+  const lateOk = await mk({ title: '지난 과제', dueAt: Date.now() - 1000, allowLate: true });
+  const shut = await mk({ title: '닫힌 과제', dueAt: Date.now() - 1000 });
+  const foreign = await mk({ title: '다른 반 과제' }, other.id);
+  assert.equal(open.desc, 'A4\n세로');
+
+  const me = await call('GET', '/api/student/me', { student: st });
+  assert.deepEqual(me.data.assignments.map((a) => a.title), ['포스터 시안', '지난 과제', '닫힌 과제'], '자기 과목 과제만');
+
+  const send = (a, name) => {
+    const f = new FormData();
+    f.append('files', new Blob(['x']), name);
+    return call('POST', `/api/student/upload${a ? `?a=${a}` : ''}`, { student: st, body: f });
+  };
+  const ok = await send(open.id, '시안.png');
+  assert.equal(ok.status, 200);
+  assert.deepEqual(ok.data.student.files.map((f) => [f.assignmentId, f.late]), [[open.id, false]]);
+  const late = await send(lateOk.id, '늦음.png');
+  assert.equal(late.data.student.files.at(-1).late, true, '마감 지난 과제는 지각으로 받음');
+  assert.equal((await send(shut.id, '안됨.png')).status, 403, '마감된 과제는 거부');
+  assert.equal((await send(foreign.id, '남의반.png')).status, 404, '다른 과목 과제는 거부');
+  assert.equal((await send(null, '기타.png')).status, 200, '과제 없이 기타 제출');
+  const link = await call('POST', '/api/student/links', { student: st, body: { url: 'https://example.com/a', assignmentId: shut.id } });
+  assert.equal(link.status, 403, '링크도 마감 적용');
+  const link2 = await call('POST', '/api/student/links', { student: st, body: { url: 'https://example.com/b', assignmentId: open.id } });
+  assert.equal(link2.data.student.files.at(-1).assignmentId, open.id);
+
+  // 교사가 '지금 마감' → 제출·삭제 모두 막힘, 다시 열면 풀림
+  await call('PATCH', `/api/master/assignments/${open.id}`, { token, body: { closed: true } });
+  assert.equal((await send(open.id, '늦게.png')).status, 403);
+  const openFile = ok.data.student.files[0];
+  assert.equal((await call('DELETE', `/api/student/files/${openFile.id}`, { student: st })).status, 403, '마감된 과제 제출물은 못 지움');
+  const lateFile = late.data.student.files.at(-1);
+  assert.equal((await call('DELETE', `/api/student/files/${lateFile.id}`, { student: st })).status, 200, '지각 받는 과제는 지울 수 있음');
+  const re = await call('PATCH', `/api/master/assignments/${open.id}`, { token, body: { closed: false, dueAt: null } });
+  assert.equal(re.data.assignment.dueAt, null);
+  assert.equal((await send(open.id, '다시.png')).status, 200);
+
+  // 과제 ZIP: 과제 파일만 + 제출현황(미제출 학생 포함)
+  const JSZip = require('jszip');
+  const z = await JSZip.loadAsync((await call('GET', `/api/master/assignments/${open.id}/zip?t=${token}`)).data);
+  const names = Object.keys(z.files);
+  assert.ok(names.some((n) => n.endsWith('01_최학생/시안.png')) && names.some((n) => n.endsWith('01_최학생/다시.png')));
+  assert.ok(!names.some((n) => n.includes('기타.png')), '다른 과제·기타 제출물은 빠짐');
+  const csv = await z.file(names.find((n) => n.endsWith('제출현황.csv'))).async('string');
+  assert.ok(csv.includes('"최학생","제출"') && csv.includes('"안낸학생","미제출"'));
+
+  // 과목 ZIP: 학생 폴더 안을 과제별로
+  const cz = await JSZip.loadAsync((await call('GET', `/api/master/courses/${course.id}/zip?t=${token}`)).data);
+  const cn = Object.keys(cz.files);
+  assert.ok(cn.some((n) => n.endsWith('01_최학생/01_포스터 시안/시안.png')));
+  assert.ok(cn.some((n) => n.endsWith('01_최학생/기타/기타.png')));
+  const ccsv = await cz.file(cn.find((n) => n.endsWith('제출현황.csv'))).async('string');
+  assert.ok(ccsv.includes('"포스터 시안","지난 과제","닫힌 과제"'));
+
+  // 과제 삭제: 제출물은 남고 '기타'로
+  assert.equal((await call('DELETE', `/api/master/assignments/${open.id}`, { token })).status, 200);
+  const after = await call('GET', '/api/student/me', { student: st });
+  assert.ok(after.data.student.files.some((f) => f.name === '시안.png' && f.assignmentId === null));
+  assert.equal(after.data.assignments.length, 2);
+
+  // 참관자에게도 과제 목록은 보임
+  const g = (await call('POST', '/api/master/guests', { token, body: { label: '참관', courseId: course.id, hours: 2 } })).data.guest;
+  const gs = await call('GET', '/api/guest/state', { token: g.token });
+  assert.deepEqual(gs.data.assignments.map((a) => a.title).sort(), ['닫힌 과제', '지난 과제']);
+
+  // 과목을 지우면 과제도 지움
+  await call('DELETE', `/api/master/courses/${course.id}`, { token });
+  const ms = await call('GET', '/api/master/state', { token });
+  assert.ok(!ms.data.assignments.some((a) => a.courseId === course.id));
+});
+
 // 로그인 차단 테스트는 이 IP 를 15분간 막으므로 항상 마지막에 둔다
 test('로그인 실패가 반복되면 차단', async () => {
   let last;
