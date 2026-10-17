@@ -1438,7 +1438,7 @@ function appsScriptCode() {
   return `// 과제 보드 연결 — 이 Gmail 로 온 메일 중 QUERY 에 맞는 것만 과제 보드로 보냅니다.
 const SITE = '${location.origin}';
 const KEY = '${S.inboxKey}';
-const QUERY = 'from:openai.com newer_than:1d'; // 가져올 메일 조건 (Gmail 검색어)
+const QUERY = 'from:(openai.com OR anthropic.com) newer_than:1d'; // 가져올 메일 조건 (Gmail 검색어): OpenAI 코드 메일 + Claude 로그인 링크 메일
 
 // 처음 한 번 실행: 1분마다 자동 확인하도록 등록
 function setup() {
@@ -1466,12 +1466,24 @@ function sendToBoard() {
           id: m.getId(), date: t, from: m.getFrom(), subject: m.getSubject(),
           to: [m.getTo(), m.getCc(), m.getHeader('Delivered-To')].join(', '),
           text: m.getPlainBody().slice(0, 8000),
+          anchors: anchors(m.getBody()),
         }),
       });
       if (res.getResponseCode() === 200) newest = Math.max(newest, t); else failed = true;
     });
   });
   if (!failed) props.setProperty('since', String(newest)); // 실패하면 다음 번에 다시 보냄 (중복은 사이트에서 무시)
+}
+
+// 메일 본문의 버튼 링크 (Claude 로그인 메일처럼 코드 대신 '로그인' 버튼만 오는 경우)
+function anchors(html) {
+  const out = [];
+  const re = /<a\\b[^>]*?href\\s*=\\s*["'](https:[^"']+)["'][^>]*>([\\s\\S]*?)<\\/a>/gi;
+  let x;
+  while ((x = re.exec(html)) && out.length < 30) {
+    out.push({ url: x[1].replace(/&amp;/g, '&'), label: x[2].replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').trim().slice(0, 40) });
+  }
+  return out;
 }
 `;
 }
@@ -1505,7 +1517,7 @@ function renderInbox() {
           h('div', { class: 'inbox-subject', title: m.subject }, m.subject || '(제목 없음)'),
           h('div', { class: 'muted small' }, `${clock(m.date)} 수신 · ${m.from}`)),
         h('button', { class: 'icon-btn', title: '지우기', onclick: () => api(`/api/master/inbox/${encodeURIComponent(m.id)}`, { method: 'DELETE', headers: H() }).catch((e) => toast(e.message, 'error')) }, '🗑️')),
-      m.links.length ? h('div', { class: 'inbox-links' }, m.links.map((u) => h('a', { href: u, target: '_blank', rel: 'noopener noreferrer' }, '🔗 인증 링크'))) : null,
+      m.links.length ? h('div', { class: 'inbox-links' }, m.links.map((u) => h('a', { href: u, target: '_blank', rel: 'noopener noreferrer', title: '주의: 선생님이 누르면 이 로그인 링크가 사용되어 학생은 쓸 수 없게 됩니다' }, m.code ? '🔗 인증 링크' : '🔑 로그인 링크 (학생이 눌러야 함)'))) : null,
       h('details', { class: 'inbox-text' }, h('summary', {}, '본문 보기'), h('pre', {}, m.text)));
   }));
 }

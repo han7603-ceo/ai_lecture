@@ -547,6 +547,31 @@ test('과제별 제출·마감: 지각 허용, 마감 후 차단·삭제 금지,
   assert.ok(!ms.data.assignments.some((a) => a.courseId === course.id));
 });
 
+test('Claude 로그인 메일: 코드 없이 버튼 링크만 와도 코드 확인 페이지에 로그인 링크 표시', async () => {
+  const { data: { token } } = await call('POST', '/api/master/login', { body: { password: 'test-pw' } });
+  const st = (await call('GET', '/api/master/state', { token })).data;
+  const post = (body) => fetch(`${BASE}/api/inbox`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'x-inbox-key': st.inboxKey }, body: JSON.stringify(body),
+  });
+  const reg = await call('POST', '/api/master/mailboxes', { token, body: { text: 'claude-s01@example.com' } });
+  const box = reg.data.mailboxes.find((b) => b.address === 'claude-s01@example.com');
+  const magic = 'https://claude.ai/magic-link#tok123:Y2xhdWRl';
+  // 1) HTML 버튼 링크(추적 주소로 감싸진 경우 포함)는 버튼 글자로 찾음, 지원·수신거부 링크는 제외
+  await post({
+    id: 'cl1', to: 'claude-s01@example.com', from: 'Anthropic <no-reply@mail.anthropic.com>', subject: 'Claude에 로그인',
+    text: 'Claude에 로그인\n아래 버튼을 클릭하여 로그인을 완료하세요.',
+    anchors: [{ url: 'https://click.example.net/ls/click?u=abc', label: '로그인' }, { url: 'https://support.anthropic.com', label: 'Anthropic 지원팀' },
+      { url: 'https://example.net/unsubscribe', label: 'Unsubscribe' }],
+  });
+  // 2) 텍스트 본문에 '로그인 [주소]' 형태로만 있는 경우
+  await post({ id: 'cl2', to: 'claude-s01@example.com', from: 'Anthropic', subject: 'Claude에 로그인', text: `로그인 [${magic}]\n도움이 필요하신가요?` });
+  const inbox = (await call('GET', `/api/code/${box.token}`)).data.inbox;
+  const by = Object.fromEntries(inbox.map((m) => [m.id, m]));
+  assert.equal(by.cl1.code, null);
+  assert.deepEqual(by.cl1.links, ['https://click.example.net/ls/click?u=abc']);
+  assert.deepEqual(by.cl2.links, [magic], '# 뒤 토큰까지 그대로');
+});
+
 test('공용 PC 모드: 과목 설정이 입장 확인·입장·개인 링크 응답에 전달됨', async () => {
   const { data: { token } } = await call('POST', '/api/master/login', { body: { password: 'test-pw' } });
   const { data: { course } } = await call('POST', '/api/master/courses', { token, body: { name: 'PC실', maxStudents: 3 } });

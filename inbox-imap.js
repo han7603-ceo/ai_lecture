@@ -2,11 +2,26 @@
 // 조건(Gmail 검색어)에 맞는 새 메일만 가져온다. 읽음 표시·라벨 등은 바꾸지 않는다.
 //   INBOX_IMAP_USER      메일 주소 (예: ad.bodacompany@gmail.com)
 //   INBOX_IMAP_PASSWORD  Google 앱 비밀번호 16자리 (2단계 인증 필요)
-//   INBOX_IMAP_QUERY     Gmail 검색어 (기본: from:openai.com newer_than:1d)
+//   INBOX_IMAP_QUERY     Gmail 검색어 (기본: from:(openai.com OR anthropic.com) newer_than:1d)
 //   INBOX_IMAP_HOST      기본 imap.gmail.com (INBOX_IMAP_PORT 기본 993, INBOX_IMAP_SECURE=0 이면 TLS 끔 — 시험용)
-//   INBOX_IMAP_FROM      Gmail 이 아닌 서버에서 쓸 보낸사람 조건 (기본 openai.com, 최근 1일)
+//   INBOX_IMAP_FROM      Gmail 이 아닌 서버에서 쓸 보낸사람 조건 (쉼표로 구분, 기본 openai.com,anthropic.com, 최근 1일)
 const { ImapFlow } = require('imapflow');
 const { simpleParser } = require('mailparser');
+
+// OpenAI 는 6자리 코드, Claude(Anthropic) 는 '로그인' 버튼 링크로 옴
+const DEFAULT_QUERY = 'from:(openai.com OR anthropic.com) newer_than:1d';
+// HTML 본문의 버튼 링크와 글자 (텍스트 본문에는 버튼 주소가 빠지는 메일이 있음)
+function anchorsOf(html) {
+  if (typeof html !== 'string') return [];
+  const out = [];
+  for (const m of html.matchAll(/<a\b[^>]*?href\s*=\s*["'](https:[^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)) {
+    const url = m[1].replace(/&amp;/g, '&');
+    const label = m[2].replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40);
+    out.push({ url, label });
+    if (out.length >= 30) break;
+  }
+  return out;
+}
 
 const POLL_MS = 30 * 1000;
 const RETRY_MS = 5 * 60 * 1000; // 로그인 실패 시 계정 잠김을 피하려고 길게 쉼
@@ -15,7 +30,7 @@ function startImapInbox({ maxAgeMs, onMessage, onStatus }) {
   const user = process.env.INBOX_IMAP_USER;
   const pass = (process.env.INBOX_IMAP_PASSWORD || '').replace(/\s+/g, ''); // "abcd efgh …" 형태도 허용
   const status = {
-    configured: !!(user && pass), user: user || '', query: process.env.INBOX_IMAP_QUERY || 'from:openai.com newer_than:1d',
+    configured: !!(user && pass), user: user || '', query: process.env.INBOX_IMAP_QUERY || DEFAULT_QUERY,
     ok: false, lastCheck: null, error: null,
   };
   const emit = () => onStatus({ ...status });
@@ -47,7 +62,7 @@ function startImapInbox({ maxAgeMs, onMessage, onStatus }) {
       try {
         // Gmail 은 Gmail 검색어 그대로, 다른 메일 서버는 보낸사람 + 최근 1일 조건으로 검색
         const query = client.capabilities.has('X-GM-EXT-1') ? { gmraw: status.query }
-          : { from: process.env.INBOX_IMAP_FROM || 'openai.com', since: new Date(Date.now() - 86400000) };
+          : { or: (process.env.INBOX_IMAP_FROM || 'openai.com,anthropic.com').split(',').map((f) => ({ from: f.trim() })).filter((x) => x.from), since: new Date(Date.now() - 86400000) };
         const uids = (await client.search(query, { uid: true })) || [];
         const recent = uids.slice(-30); // 최근 것만
         if (recent.length) {
@@ -72,6 +87,7 @@ function startImapInbox({ maxAgeMs, onMessage, onStatus }) {
               to: [...addrs(mail.to), ...addrs(mail.cc), ...delivered].join(', '),
               subject: mail.subject || '',
               text: (mail.text || '').slice(0, 8000),
+              anchors: anchorsOf(mail.html),
             });
           }
         }
