@@ -1356,8 +1356,20 @@ function parseInbound(b) {
   const text = String(b.text ?? '').replace(/\r/g, '').replace(/[\u0000-\u0008\u000b-\u001f]/g, '').slice(0, 8000);
   const to = [...new Set((String(b.to ?? '').match(EMAIL_RE) || []).map(normEmail))].slice(0, 10);
   const code = (subject.match(/\b(\d{6})\b/) || text.match(/\b(\d{6})\b/) || [])[1] || null;
-  const links = [...new Set(text.match(/https:\/\/[^\s<>"'()[\]]+/g) || [])]
-    .filter((u) => /verif|auth|login|log-in|confirm|magic|token|activate/i.test(u)).slice(0, 3);
+  // 인증·로그인 링크: 주소에 verify/login/magic 등이 있거나, 버튼 글자가 '로그인'·'Log in'·'인증' 같은 링크
+  // (Claude 로그인 메일은 코드 없이 10분짜리 로그인 링크만 옴 — 추적용 주소로 감싸져 있어도 버튼 글자로 찾음)
+  const LINK_URL_RE = /verif|auth|login|log-in|signin|sign-in|confirm|magic|token|activate/i;
+  const LINK_LABEL_RE = /로그인|인증|확인|log ?in|sign ?in|verify|confirm|continue|magic/i;
+  const anchors = (Array.isArray(b.anchors) ? b.anchors : []).slice(0, 30)
+    .map((a) => ({ url: String(a?.url || ''), label: String(a?.label || '') }))
+    .filter((a) => /^https:\/\/\S+$/.test(a.url) && a.url.length <= 2000 && !/unsubscribe|수신.?거부/i.test(a.url + a.label));
+  const fromText = text.match(/https:\/\/[^\s<>"'()[\]]+/g) || [];
+  const labelled = [...text.matchAll(/(로그인|인증|log ?in|sign ?in|verify)[^\n\[]{0,20}\[\s*(https:\/\/[^\s\]<>"']+)\s*\]/gi)].map((m) => m[2]);
+  const links = [...new Set([
+    ...anchors.filter((a) => LINK_LABEL_RE.test(a.label) || LINK_URL_RE.test(a.url)).map((a) => a.url),
+    ...labelled,
+    ...fromText.filter((u) => LINK_URL_RE.test(u)),
+  ])].slice(0, 3);
   const at = Date.now();
   return { id, at, date: Number(b.date) || at, from: cleanText(b.from, 200), to, subject, code, links, text };
 }

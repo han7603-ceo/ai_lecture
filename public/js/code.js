@@ -19,7 +19,7 @@ function latest() {
   return [...groups.values()];
 }
 const olderRow = (m) => h('div', { class: 'code-old' },
-  m.code ? h('button', { class: 'code-old-num', title: '눌러서 복사', onclick: () => copy(m.code) }, m.code) : h('span', { class: 'muted' }, '코드 없음'),
+  m.code ? h('button', { class: 'code-old-num', title: '눌러서 복사', onclick: () => copy(m.code) }, m.code) : h('span', { class: 'muted' }, m.links.length ? '로그인 링크' : '코드 없음'),
   h('span', { class: 'muted small' }, `${timeAgo(m.date || m.at)}`));
 function render() {
   const list = latest();
@@ -30,10 +30,11 @@ function render() {
   $('#cList').replaceChildren(...list.map((m) => h('div', { class: `card code-card ${m.id === freshId ? 'fresh' : ''}` },
     data.all ? h('div', { class: 'code-who' }, m.address) : null,
     m.code ? h('button', { class: 'code-big', title: '눌러서 복사', onclick: () => copy(m.code) }, m.code)
-      : h('div', { class: 'code-sub' }, '코드가 없는 메일입니다 — 아래 링크를 확인하세요.'),
+      : h('div', { class: 'code-sub' }, m.links.length ? '🔑 코드 대신 로그인 링크로 온 메일입니다 (보통 10분 안에 사용)' : '코드가 없는 메일입니다.'),
     h('div', { class: 'code-sub' }, `${timeAgo(m.date || m.at)} 도착${m.code ? ' · 누르면 복사' : ''}`),
     h('div', { class: 'code-sub', title: m.subject }, m.subject || ''),
-    m.links.length ? h('div', { class: 'code-links' }, m.links.map((u) => h('a', { class: 'btn sm', href: u, target: '_blank', rel: 'noopener noreferrer' }, '🔗 인증 링크 열기'))) : null,
+    m.links.length ? h('div', { class: 'code-links' }, m.links.map((u) => h('a', { class: `btn ${m.code ? 'sm' : 'primary'}`, href: u, target: '_blank', rel: 'noopener noreferrer' }, m.code ? '🔗 인증 링크 열기' : '🔑 로그인 링크 열기'))) : null,
+    !m.code && m.links.length ? h('div', { class: 'code-sub code-tip' }, '로그인을 시작한 PC(같은 브라우저)에서 누르면 바로 로그인됩니다. 휴대폰에서 눌렀다면 화면에 나온 코드를 PC에 입력하세요. 한 번 누르면 다시 쓸 수 없습니다.') : null,
     m.older.length ? h('div', { class: 'code-olds' }, h('div', { class: 'muted small' }, '이전 코드'), m.older.map(olderRow)) : null)));
 }
 async function copy(code) {
