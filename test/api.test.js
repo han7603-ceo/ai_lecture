@@ -572,6 +572,38 @@ test('Claude 로그인 메일: 코드 없이 버튼 링크만 와도 코드 확�
   assert.deepEqual(by.cl2.links, [magic], '# 뒤 토큰까지 그대로');
 });
 
+test('제출물 비우기: 과목 전체·과제별, 학생 등록·PIN·전용 링크는 유지', async () => {
+  const { data: { token } } = await call('POST', '/api/master/login', { body: { password: 'test-pw' } });
+  const { data: { course } } = await call('POST', '/api/master/courses', { token, body: { name: '비우기반', maxStudents: 3 } });
+  const a1 = (await call('POST', `/api/master/courses/${course.id}/assignments`, { token, body: { title: '과제1' } })).data.assignment;
+  const j = (await call('POST', '/api/join', { body: { code: course.code, name: '정학생', pin: '1234' } })).data;
+  const send = (a, name) => {
+    const f = new FormData();
+    f.append('files', new Blob(['x']), name);
+    return call('POST', `/api/student/upload${a ? `?a=${a}` : ''}`, { student: j.token, body: f });
+  };
+  await send(a1.id, '과제1.png');
+  await send(null, '기타.png');
+  await call('POST', '/api/student/links', { student: j.token, body: { url: 'https://example.com/x', assignmentId: a1.id } });
+  assert.equal((await call('POST', `/api/master/assignments/${a1.id}/clear-submissions`, { student: j.token })).status, 401, '교사만');
+
+  const r1 = await call('POST', `/api/master/assignments/${a1.id}/clear-submissions`, { token });
+  assert.equal(r1.data.removed, 2, '그 과제의 파일·링크만');
+  let me = (await call('GET', '/api/student/me', { student: j.token })).data;
+  assert.deepEqual(me.student.files.map((f) => f.name), ['기타.png']);
+  assert.equal(me.assignments.length, 1, '과제는 남음');
+
+  await send(a1.id, '다시.png');
+  const r2 = await call('POST', `/api/master/courses/${course.id}/clear-submissions`, { token });
+  assert.equal(r2.data.removed, 2);
+  me = (await call('GET', '/api/student/me', { student: j.token })).data;
+  assert.equal(me.student.files.length, 0);
+  // 학생 등록·PIN·전용 링크 유지
+  assert.equal((await call('POST', '/api/join/key', { body: { key: j.key } })).status, 200);
+  assert.equal((await call('POST', '/api/join', { body: { code: course.code, name: '정학생', pin: '1234' } })).data.reclaimed, true);
+  assert.equal((await call('POST', `/api/master/assignments/nope/clear-submissions`, { token })).status, 404);
+});
+
 test('공용 PC 모드: 과목 설정이 입장 확인·입장·개인 링크 응답에 전달됨', async () => {
   const { data: { token } } = await call('POST', '/api/master/login', { body: { password: 'test-pw' } });
   const { data: { course } } = await call('POST', '/api/master/courses', { token, body: { name: 'PC실', maxStudents: 3 } });
