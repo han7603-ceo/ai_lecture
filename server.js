@@ -978,6 +978,28 @@ async function removeStudent(s) {
   toMasters('student:remove', { id: s.id, courseId: s.courseId });
 }
 
+// 제출물만 비우기: 학생 등록(이름·PIN·전용 링크)은 그대로 두고 파일·링크만 삭제 (match 로 범위 지정)
+async function clearSubmissions(courseId, match = () => true) {
+  let removed = 0;
+  for (const s of studentsOf(courseId)) {
+    const ids = s.files.filter(match).map((f) => f.id);
+    for (const id of ids) if (await removeFileRecord(s, id)) removed++;
+    if (ids.length) { pushStudent(s); toStudent(s.id, 'student:update', publicStudent(s)); }
+  }
+  saveState();
+  return removed;
+}
+app.post('/api/master/courses/:id/clear-submissions', requireMaster, async (req, res) => {
+  const c = getCourse(req, res);
+  if (!c) return;
+  res.json({ removed: await clearSubmissions(c.id) });
+});
+app.post('/api/master/assignments/:id/clear-submissions', requireMaster, async (req, res) => {
+  const a = state.assignments[req.params.id];
+  if (!a) return res.status(404).json({ error: '과제를 찾을 수 없습니다.' });
+  res.json({ removed: await clearSubmissions(a.courseId, (f) => f.assignmentId === a.id) });
+});
+
 // 과목 초기화: 학생/파일 전부 삭제 (과목 설정은 유지)
 app.post('/api/master/courses/:id/clear', requireMaster, async (req, res) => {
   const c = getCourse(req, res);

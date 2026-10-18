@@ -1094,6 +1094,8 @@ function renderAssignList() {
         st === 'closed' ? h('button', { class: 'btn sm', onclick: () => reopenAssignment(a) }, '🔓 다시 열기')
           : h('button', { class: 'btn sm', onclick: () => closeAssignment(a) }, '⏹ 지금 마감'),
         h('button', { class: 'btn sm', onclick: () => downloadAssignZip(a) }, '🗜️ ZIP'),
+        h('button', { class: 'btn sm', title: '이 과제에 낸 파일·링크만 지우기 (과제는 남음)', onclick: () => clearFiles(`/api/master/assignments/${a.id}/clear-submissions`, `'${a.title}' 과제`,
+          courseStudents().reduce((n, s) => n + s.files.filter((f) => aidOf(f) === a.id).length, 0)) }, '🧹 제출물 비우기'),
         h('button', { class: 'icon-btn', title: '과제 삭제', onclick: () => deleteAssignment(a) }, '🗑️'))));
   }
 }
@@ -1159,6 +1161,21 @@ $('#sSave').addEventListener('click', async () => {
 $('#sRegen').addEventListener('click', async () => {
   if (!(await confirmDialog('입장 코드를 새로 만들까요?\n이전 코드와 QR 로는 더 이상 새로 입장할 수 없습니다. (이미 입장한 학생은 유지)'))) return;
   try { await api(`/api/master/courses/${courseId}/regen-code`, { method: 'POST', headers: H() }); toast('새 입장 코드를 만들었습니다.', 'ok'); } catch (e) { toast(e.message, 'error'); }
+});
+// 제출물 비우기 (전체 또는 과제 하나): 학생 등록은 유지
+async function clearFiles(url, what, count) {
+  if (!count) return toast(`${what}에 지울 제출물이 없습니다.`);
+  if (!(await confirmDialog(`${what}의 제출물 ${count}개를 모두 지울까요?\n\n• 학생 등록·PIN·전용 링크·과제 목록은 그대로 남습니다\n• 지운 파일은 되돌릴 수 없으니 먼저 🗜️ ZIP 으로 받아 두세요`, { ok: '제출물 비우기', danger: true }))) return false;
+  try {
+    const r = await api(url, { method: 'POST', headers: H() });
+    toast(`제출물 ${r.removed}개를 지웠습니다.`, 'ok');
+    return true;
+  } catch (e) { toast(e.message, 'error'); return false; }
+}
+$('#sClearFiles').addEventListener('click', async () => {
+  const c = course();
+  const count = courseStudents().reduce((n, s) => n + s.files.length, 0);
+  if (await clearFiles(`/api/master/courses/${c.id}/clear-submissions`, `'${c.name}' 과목 전체`, count)) closeModal('#settingsModal');
 });
 $('#sClear').addEventListener('click', async () => {
   const c = course();
