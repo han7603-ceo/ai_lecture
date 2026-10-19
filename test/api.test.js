@@ -620,6 +620,13 @@ test('학생 링크 여러 개 한 번에 제출: 모두 같은 과제로, 하�
   assert.deepEqual(files.map((f) => f.url), ['https://a.com/1', 'https://b.com/2']);
   assert.equal(files[0].name, '첫째');
   assert.ok(files.every((f) => f.assignmentId === a.id));
+  // 같은 과제에 이미 낸 주소는 막음 (끝의 / 무시), 섞여 있으면 새 것만 받음, 다른 과제·기타에는 낼 수 있음
+  const dup = await call('POST', '/api/student/links', { student: st, body: { url: 'https://a.com/1/', assignmentId: a.id } });
+  assert.equal(dup.status, 409);
+  const mix = await call('POST', '/api/student/links', { student: st, body: { links: [{ url: 'https://b.com/2' }, { url: 'https://d.com/3' }], assignmentId: a.id } });
+  assert.equal(mix.status, 200);
+  assert.deepEqual([mix.data.added, mix.data.skipped], [1, 1]);
+  assert.equal((await call('POST', '/api/student/links', { student: st, body: { url: 'https://a.com/1' } })).status, 200, '기타로는 따로 낼 수 있음');
   const many = Array.from({ length: 21 }, (_, i) => ({ url: `https://c.com/${i}` }));
   assert.equal((await call('POST', '/api/student/links', { student: st, body: { links: many } })).status, 400, '한 번에 20개까지');
 });

@@ -196,6 +196,12 @@ function addLink(url, title = '', quiet = false) {
   url = url.trim();
   if (!url) return false;
   if (pendingLinks.some((l) => l.url === url)) { if (!quiet) toast('이미 목록에 있는 링크입니다.'); return false; }
+  // 고른 과제에 이미 낸 주소면 넣지 않음 (서버도 한 번 더 확인)
+  const norm = (u) => u.replace(/^(?!https?:\/\/)/i, 'https://').replace(/\/+$/, '');
+  if (me.student.files.some((f) => f.kind === 'link' && (f.assignmentId || null) === (pickId || null) && norm(f.url) === norm(url))) {
+    if (!quiet) toast('이미 제출한 링크입니다.', 'error');
+    return false;
+  }
   pendingLinks.push({ url, title: title.trim() });
   return true;
 }
@@ -247,14 +253,15 @@ $('#linkForm').addEventListener('submit', async (e) => {
   $('#linkBtn').disabled = true;
   try {
     const r = await api('/api/student/links', { method: 'POST', body: { links: pendingLinks, assignmentId: pickId || null }, headers: authHeaders() });
-    const n = pendingLinks.length;
+    const n = r.added ?? pendingLinks.length;
     me.student = r.student;
     pendingLinks = [];
     renderLinkPending();
     renderDone();
     renderAssignments();
-    toast(`${pickedAssignment() ? `'${pickedAssignment().title}' 과제에 ` : ''}링크 ${n > 1 ? `${n}개를 ` : '를 '}제출했습니다! ✅`, 'ok');
+    toast(`${pickedAssignment() ? `'${pickedAssignment().title}' 과제에 ` : ''}링크 ${n > 1 ? `${n}개를 ` : '를 '}제출했습니다! ✅${r.skipped ? ` (이미 낸 링크 ${r.skipped}개는 뺐습니다)` : ''}`, 'ok', r.skipped ? 4500 : 2600);
   } catch (err) {
+    if (err.status === 409) { pendingLinks = []; renderLinkPending(); } // 전부 이미 낸 링크 → 목록 비움
     toast(err.message, 'error', 4000); // 실패하면 목록은 그대로 두고 고쳐서 다시 제출
   } finally {
     renderHeader();

@@ -700,8 +700,17 @@ app.post('/api/student/links', requireStudent, (req, res) => {
   const pick = pickAssignment(req, res, req.body?.assignmentId);
   if (!pick) return;
   const s = req.student;
+  // 같은 과제(또는 '기타')에 이미 낸 주소는 다시 받지 않음 (끝의 / 차이는 같은 주소로 봄)
+  const aid = pick.a?.id || null;
+  const sameUrl = (u) => u.replace(/\/+$/, '');
+  const already = new Set(s.files.filter((f) => f.kind === 'link' && (f.assignmentId || null) === aid).map((f) => sameUrl(f.url)));
+  const fresh = items.filter((x) => !already.has(sameUrl(x.url)));
+  const skipped = items.length - fresh.length;
+  if (!fresh.length) {
+    return res.status(409).json({ error: items.length > 1 ? '모두 이미 제출한 링크입니다.' : '이미 제출한 링크입니다.', skipped });
+  }
   const now = Date.now();
-  for (const { url, title } of items) {
+  for (const { url, title } of fresh) {
     s.files.push({
       id: newId(), kind: 'link', url, name: linkTitle(url, title), ext: 'link', size: 0,
       mime: '', stored: null, uploadedAt: now, assignmentId: pick.a?.id || null, late: pick.late,
@@ -709,7 +718,7 @@ app.post('/api/student/links', requireStudent, (req, res) => {
   }
   saveState();
   pushStudent(s);
-  res.json({ student: publicStudent(s) });
+  res.json({ student: publicStudent(s), added: fresh.length, skipped });
 });
 
 async function removeFileRecord(s, fileId) {
