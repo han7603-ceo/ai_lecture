@@ -64,6 +64,8 @@ export async function renderPreview(box, src) {
         return await renderPdf(box, src.url, src.blob, alive);
       case 'text':
         return await renderText(box, src, alive);
+      case 'web':
+        return renderWeb(box, src);
     }
 
     if (src.ext === 'csv') return await renderCsv(box, src, alive);
@@ -101,6 +103,24 @@ export async function renderPreview(box, src) {
     box.innerHTML = '';
     box.append(unsupported(src, `미리보기를 만들 수 없습니다: ${e.message}`));
   }
+}
+
+// ---------------------------------------------------------------- HTML (격리된 창에서 실행)
+// 서버가 토큰 없는 서명 주소 + sandbox 헤더로 내려 주고, iframe 에도 sandbox 를 걸어
+// 학생이 만든 스크립트가 이 사이트의 로그인 정보에 접근하지 못하게 함 (allow-same-origin 없음)
+function renderWeb(box, src) {
+  if (src.blob) {
+    box.append(unsupported(src, 'HTML 파일은 올린 뒤에 실행해 볼 수 있습니다.'));
+    return;
+  }
+  box.append(
+    h('div', { class: 'pv-toolbar' },
+      h('span', { class: 'muted' }, '🌐 격리된 화면에서 실행합니다 · 브라우저 저장소(localStorage)·로그인은 동작하지 않을 수 있습니다'),
+      h('a', { class: 'btn sm', href: src.url, target: '_blank', rel: 'noopener noreferrer' }, '새 창에서 열기')),
+    h('iframe', {
+      src: src.url, class: 'pv-frame pv-web', title: src.name, referrerpolicy: 'no-referrer',
+      sandbox: 'allow-scripts allow-forms allow-modals allow-popups allow-pointer-lock',
+    }));
 }
 
 // ---------------------------------------------------------------- PDF

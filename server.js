@@ -52,9 +52,21 @@ const ALLOWED_EXT = new Set([
   'wav', 'wave', 'mp3', 'm4a', 'ogg', 'aac',
   // 문서
   'pdf', 'hwp', 'hwpx', 'doc', 'docx', 'ppt', 'pptx', 'pps', 'ppsx', 'xls', 'xlsx', 'csv', 'txt',
+  // 웹 (격리된 창에서만 실행)
+  'html', 'htm',
   // 기타
   'zip',
 ]);
+// 파일을 보여 줄 때의 형식은 업로드한 브라우저가 알려 준 값이 아니라 확장자로 정함 (위장 파일 방지)
+const MIME_BY_EXT = {
+  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', heic: 'image/heic',
+  mp4: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm', m4v: 'video/x-m4v',
+  wav: 'audio/wav', wave: 'audio/wav', mp3: 'audio/mpeg', m4a: 'audio/mp4', ogg: 'audio/ogg', aac: 'audio/aac',
+  pdf: 'application/pdf', txt: 'text/plain; charset=utf-8', csv: 'text/csv; charset=utf-8',
+  html: 'text/html; charset=utf-8', htm: 'text/html; charset=utf-8', zip: 'application/zip',
+};
+const mimeOf = (ext) => MIME_BY_EXT[ext] || 'application/octet-stream';
+const isHtml = (ext) => ext === 'html' || ext === 'htm';
 // LibreOffice 로 PDF 변환을 시도할 확장자
 const CONVERTIBLE_EXT = new Set(['doc', 'docx', 'ppt', 'pptx', 'pps', 'ppsx', 'xls', 'xlsx', 'hwp']);
 
@@ -418,6 +430,8 @@ const toMastersOnly = (event, payload) => io.to('master').emit(event, payload);
 // ---------------------------------------------------------------------------
 // 미들웨어
 // ---------------------------------------------------------------------------
+// 주소(입장 토큰 등)가 다른 사이트나 학생 HTML 로 새어 나가지 않게
+app.use((req, res, next) => { res.setHeader('Referrer-Policy', 'no-referrer'); next(); });
 app.use(express.json({ limit: '100kb' }));
 
 function getToken(req, header) {
@@ -765,13 +779,46 @@ function resolveFileAccess(req) {
   return { owner, file: owner.files.find((f) => f.id === fileId) };
 }
 
+// HTML 은 토큰 없는 짧은 서명 주소(10분)로만 열고, 격리(sandbox)해서 이 사이트의 로그인 정보에 접근 못 하게 함
+const VIEW_KEY = crypto.randomBytes(32);
+const viewSig = (kind, id, exp) => crypto.createHmac('sha256', VIEW_KEY).update(`${kind}:${id}:${exp}`).digest('base64url');
+function viewUrl(kind, id) {
+  const exp = Date.now() + 10 * 60000;
+  return `/view/${kind}/${id}?e=${exp}&s=${viewSig(kind, id, exp)}`;
+}
+function sendSafe(res, abs, ext) {
+  const headers = { 'Content-Type': mimeOf(ext), 'X-Content-Type-Options': 'nosniff' };
+  if (isHtml(ext)) {
+    headers['Content-Security-Policy'] = 'sandbox allow-scripts allow-forms allow-modals allow-popups allow-pointer-lock';
+    headers['Cache-Control'] = 'no-store';
+  }
+  res.sendFile(abs, { headers });
+}
+app.get('/view/:kind/:id', (req, res) => {
+  const { kind, id } = req.params;
+  const exp = Number(req.query.e);
+  const sig = String(req.query.s || '');
+  const good = viewSig(kind, id, exp);
+  if (!(exp > Date.now()) || sig.length !== good.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(good))) {
+    return res.status(403).type('text/plain; charset=utf-8').send('보기 주소가 만료되었습니다. 원래 화면에서 다시 열어 주세요.');
+  }
+  let rec = null;
+  let base = UPLOAD_DIR;
+  if (kind === 'f') rec = findFile(id)?.f;
+  else if (kind === 'm') { rec = state.materials[id]; base = DATA_DIR; }
+  if (!rec?.stored || !isHtml(rec.ext)) return res.status(404).send('파일을 찾을 수 없습니다.');
+  sendSafe(res, path.join(base, rec.stored), rec.ext);
+});
+
 app.get('/files/:fileId', (req, res) => {
   const a = resolveFileAccess(req);
   if (!a) return res.status(404).send('파일을 찾을 수 없습니다.');
   if (a.file.kind === 'link') return res.redirect(302, a.file.url);
   const abs = path.join(UPLOAD_DIR, a.file.stored);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
   if (req.query.download) return res.download(abs, a.file.name);
-  res.sendFile(abs, { headers: { 'Content-Type': a.file.mime || 'application/octet-stream' } });
+  if (isHtml(a.file.ext)) return res.redirect(302, viewUrl('f', a.file.id));
+  sendSafe(res, abs, a.file.ext);
 });
 
 // LibreOffice 로 문서를 PDF 로 변환 (순차 처리 + 결과 캐시)
@@ -1610,8 +1657,10 @@ app.get('/materials/:id', (req, res) => {
   // 링크: 확인 기록을 남긴 뒤 원래 주소로 이동
   if (a.m.kind === 'link') return res.redirect(302, a.m.url);
   const abs = path.join(DATA_DIR, a.m.stored);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
   if (req.query.download) return res.download(abs, a.m.name);
-  res.sendFile(abs, { headers: { 'Content-Type': a.m.mime || 'application/octet-stream' } });
+  if (isHtml(a.m.ext)) return res.redirect(302, viewUrl('m', a.m.id));
+  sendSafe(res, abs, a.m.ext);
 });
 
 app.get('/materials/:id/pdf', async (req, res) => {

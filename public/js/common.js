@@ -83,6 +83,7 @@ const KIND = {
   sheet: ['xls', 'xlsx', 'csv'],
   hwp: ['hwp', 'hwpx'],
   text: ['txt'],
+  web: ['html', 'htm'],
   zip: ['zip'],
   link: ['link'], // 링크 제출
 };
@@ -96,7 +97,7 @@ export function kindOf(ext) {
 }
 const ICON = {
   image: '🖼️', video: '🎬', audio: '🎵', pdf: '📕', word: '📘', slide: '📙',
-  sheet: '📗', hwp: '📄', text: '📝', zip: '🗜️', link: '🔗', file: '📎',
+  sheet: '📗', hwp: '📄', text: '📝', web: '🌐', zip: '🗜️', link: '🔗', file: '📎',
 };
 export const iconOf = (ext) => ICON[kindOf(ext)];
 
@@ -104,7 +105,7 @@ export const ACCEPT = [
   '.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic',
   '.mp4', '.mov', '.webm', '.m4v',
   '.wav', '.mp3', '.m4a', '.ogg', '.aac',
-  '.pdf', '.hwp', '.hwpx', '.doc', '.docx', '.ppt', '.pptx', '.pps', '.ppsx', '.xls', '.xlsx', '.csv', '.txt', '.zip',
+  '.pdf', '.hwp', '.hwpx', '.doc', '.docx', '.ppt', '.pptx', '.pps', '.ppsx', '.xls', '.xlsx', '.csv', '.txt', '.html', '.htm', '.zip',
 ].join(',');
 
 export function confirmDialog(message, { ok = '확인', cancel = '취소', danger = false } = {}) {
