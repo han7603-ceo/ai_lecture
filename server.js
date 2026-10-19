@@ -20,6 +20,7 @@ const { startImapInbox } = require('./inbox-imap');
 const archiver = require('archiver');
 const QRCode = require('qrcode');
 const { buildLinksWorkbook, buildPptx } = require('./export-office');
+const analyzer = require('./analyzer');
 const { Server } = require('socket.io');
 
 // ---------------------------------------------------------------------------
@@ -30,6 +31,7 @@ const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, 'data
 const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
 const MATERIAL_DIR = path.join(DATA_DIR, 'materials'); // 교사가 학생에게 보낸 자료
+const ANALYSIS_DIR = path.join(DATA_DIR, 'analysis'); // 과제 URL 분석 화면 캡처
 const MAX_FILE_MB = Number(process.env.MAX_FILE_MB) || 300;
 // 제출현황.csv 의 시각 표기 (서버가 UTC 로 돌아도 한국 시간으로)
 const TIME_ZONE = process.env.TZ_DISPLAY || 'Asia/Seoul';
@@ -82,6 +84,7 @@ function loadState() {
     s.guests ||= {};
     s.mailboxes ||= {};
     s.assignments ||= {};
+    s.analyses ||= {};
     return s;
   } catch {
     return {
@@ -93,6 +96,7 @@ function loadState() {
       guests: {},
       mailboxes: {},
       assignments: {},
+      analyses: {},
     };
   }
 }
@@ -231,7 +235,7 @@ function assignmentState(a, now = Date.now()) {
 }
 const publicAssignment = (a) => ({
   id: a.id, courseId: a.courseId, title: a.title, desc: a.desc || '', dueAt: a.dueAt || null,
-  allowLate: !!a.allowLate, closed: !!a.closed, createdAt: a.createdAt,
+  allowLate: !!a.allowLate, closed: !!a.closed, createdAt: a.createdAt, criteria: a.criteria || '',
 });
 
 // ---------------------------------------------------------------------------
@@ -726,6 +730,7 @@ async function removeFileRecord(s, fileId) {
   const idx = s.files.findIndex((f) => f.id === fileId);
   if (idx < 0) return false;
   const [f] = s.files.splice(idx, 1);
+  dropAnalysis(f.id);
   if (!f.stored) return true; // 링크
   const abs = path.join(UPLOAD_DIR, f.stored);
   await fsp.rm(abs, { force: true });
@@ -881,6 +886,8 @@ app.get('/api/master/state', requireMaster, (req, res) => {
     materials: Object.values(state.materials).map(publicMaterial),
     assignments: Object.values(state.assignments).map(publicAssignment),
     iceServers: ICE_SERVERS,
+    analyses: Object.values(state.analyses).filter((a) => findFile(a.fileId)).map(publicAnalysis),
+    analysisInfo: analysisInfo(),
     publicUrl,
     publicUrlSource,
     lanUrls: lanUrls(),
@@ -994,6 +1001,7 @@ app.post('/api/master/courses/:id/end', requireMaster, (req, res) => {
 });
 
 async function removeStudent(s) {
+  for (const f of s.files) dropAnalysis(f.id);
   delete state.students[s.id];
   await fsp.rm(path.join(UPLOAD_DIR, s.courseId, s.id), { recursive: true, force: true });
   toStudent(s.id, 'kicked', {});
@@ -1090,6 +1098,159 @@ app.delete('/api/master/students/:id/files/:fileId', requireMaster, async (req, 
 //   seen:   { studentId: 처음 연 시각 } — 교사 화면의 '확인' 표시
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+// 과제 URL 분석 (교사 전용): 학생이 낸 링크를 열어 자동 점검·화면 캡처 → AI 피드백 초안
+// ---------------------------------------------------------------------------
+const ANALYSIS_CONCURRENCY = 2;
+const analysisQueue = [];
+let analysisRunning = 0;
+const publicAnalysis = (a) => ({
+  id: a.id, fileId: a.fileId, studentId: a.studentId, assignmentId: a.assignmentId, url: a.url,
+  status: a.status, error: a.error || null, facts: a.facts || null, feedback: a.feedback || null, skipped: a.skipped || null,
+  note: a.note || '', edited: !!a.edited, shots: a.shots || {}, usage: a.usage || null, model: a.model || null,
+  queuedAt: a.queuedAt, doneAt: a.doneAt || null,
+});
+const pushAnalysis = (a) => io.to('master').emit('analysis:update', publicAnalysis(a));
+function findFile(fileId) {
+  for (const s of Object.values(state.students)) {
+    const f = s.files.find((x) => x.id === fileId);
+    if (f) return { s, f };
+  }
+  return null;
+}
+function dropAnalysis(fileId) {
+  const a = state.analyses[fileId];
+  if (!a) return;
+  delete state.analyses[fileId];
+  for (const k of ['desktop', 'mobile']) fs.rm(path.join(ANALYSIS_DIR, `${a.id}-${k}.jpg`), { force: true }, () => {});
+  io.to('master').emit('analysis:remove', { id: a.id, fileId });
+}
+function queueAnalysis(fileId) {
+  const hit = findFile(fileId);
+  if (!hit || hit.f.kind !== 'link') return null;
+  const old = state.analyses[fileId];
+  if (old && ['queued', 'running'].includes(old.status)) return old;
+  const a = {
+    id: old?.id || newId(), fileId, studentId: hit.s.id, assignmentId: hit.f.assignmentId || null, url: hit.f.url,
+    status: 'queued', queuedAt: Date.now(), note: old?.note || '',
+  };
+  state.analyses[fileId] = a;
+  analysisQueue.push(fileId);
+  pushAnalysis(a);
+  setImmediate(runAnalyses);
+  return a;
+}
+function analysisError(e) {
+  const A = analyzer.Anthropic;
+  if (e instanceof A.AuthenticationError) return 'Anthropic API 키가 올바르지 않습니다. Railway Variables 의 ANTHROPIC_API_KEY 를 확인하세요.';
+  if (e instanceof A.PermissionDeniedError) return 'API 키에 이 모델을 쓸 권한이 없습니다.';
+  if (e instanceof A.RateLimitError) return '요청이 많아 잠시 막혔습니다. 조금 뒤 다시 분석하세요.';
+  if (e instanceof A.APIConnectionError) return 'Anthropic API 에 연결하지 못했습니다.';
+  if (e instanceof A.APIError) return `AI 요청 실패 (${e.status || '오류'}). ${String(e.message || '').slice(0, 160)}`;
+  return `분석 중 오류: ${String(e?.message || e).slice(0, 200)}`;
+}
+async function runAnalyses() {
+  while (analysisRunning < ANALYSIS_CONCURRENCY && analysisQueue.length) {
+    const fileId = analysisQueue.shift();
+    const a = state.analyses[fileId];
+    if (!a || a.status !== 'queued') continue;
+    analysisRunning++;
+    (async () => {
+      a.status = 'running';
+      a.startedAt = Date.now();
+      pushAnalysis(a);
+      try {
+        const inspected = await analyzer.inspect(a.url);
+        a.facts = inspected.facts;
+        a.shots = {};
+        await fsp.mkdir(ANALYSIS_DIR, { recursive: true });
+        for (const k of ['desktop', 'mobile']) {
+          if (!inspected[k]) continue;
+          await fsp.writeFile(path.join(ANALYSIS_DIR, `${a.id}-${k}.jpg`), inspected[k]);
+          a.shots[k] = Date.now(); // 캐시 무효화용 값
+        }
+        if (!state.analyses[fileId]) return; // 그사이 파일이 지워짐
+        pushAnalysis(a);
+        const assignment = state.assignments[a.assignmentId] || { title: '(과제 없음)', desc: '', criteria: '' };
+        const fb = await analyzer.feedback({ assignment, url: a.url, inspected });
+        a.feedback = fb.data || null;
+        a.skipped = fb.skipped ? fb.reason : null;
+        a.error = fb.error || null;
+        a.usage = fb.usage || null;
+        a.model = fb.model || null;
+        a.edited = false;
+        a.status = fb.error ? 'error' : 'done';
+      } catch (e) {
+        console.error('분석 실패', a.url, e?.message || e);
+        a.status = 'error';
+        a.error = analysisError(e);
+      } finally {
+        a.doneAt = Date.now();
+        analysisRunning--;
+        if (state.analyses[fileId] === a) { saveState(); pushAnalysis(a); }
+        setImmediate(runAnalyses);
+      }
+    })();
+  }
+}
+// 서버가 재시작되면 하던 분석은 다시 대기열로
+for (const a of Object.values(state.analyses || {})) {
+  if (['queued', 'running'].includes(a.status)) { a.status = 'queued'; analysisQueue.push(a.fileId); }
+}
+setImmediate(runAnalyses);
+
+const analysisInfo = () => ({ apiKey: !!process.env.ANTHROPIC_API_KEY, capture: analyzer.canCapture(), model: analyzer.MODEL });
+// 과제 전체 분석: 아직 분석 안 한 링크만 (force=true 면 전부 다시)
+app.post('/api/master/assignments/:id/analyze', requireMaster, (req, res) => {
+  const a = state.assignments[req.params.id];
+  if (!a) return res.status(404).json({ error: '과제를 찾을 수 없습니다.' });
+  const force = !!req.body?.force;
+  let queued = 0;
+  for (const s of studentsOf(a.courseId)) {
+    for (const f of s.files) {
+      if (f.kind !== 'link' || f.assignmentId !== a.id) continue;
+      const old = state.analyses[f.id];
+      if (!force && old && old.status !== 'error') continue;
+      if (queueAnalysis(f.id)) queued++;
+    }
+  }
+  saveState();
+  res.json({ queued, ...analysisInfo() });
+});
+app.post('/api/master/files/:fileId/analyze', requireMaster, (req, res) => {
+  const a = queueAnalysis(req.params.fileId);
+  if (!a) return res.status(404).json({ error: '분석할 링크를 찾을 수 없습니다.' });
+  saveState();
+  res.json({ analysis: publicAnalysis(a) });
+});
+// 교사가 AI 초안을 고치거나 메모를 남김
+app.patch('/api/master/analyses/:id', requireMaster, (req, res) => {
+  const a = Object.values(state.analyses).find((x) => x.id === req.params.id);
+  if (!a) return res.status(404).json({ error: '분석 결과를 찾을 수 없습니다.' });
+  const list = (v) => (Array.isArray(v) ? v.map((x) => cleanText(x, 400)).filter(Boolean).slice(0, 12) : undefined);
+  const fb = req.body?.feedback;
+  if (fb && typeof fb === 'object') {
+    a.feedback = {
+      ...(a.feedback || { criteria: [], security_notes: [] }),
+      ...(fb.summary !== undefined ? { summary: cleanMultiline(fb.summary, 1000) } : {}),
+      ...(list(fb.strengths) ? { strengths: list(fb.strengths) } : {}),
+      ...(list(fb.improvements) ? { improvements: list(fb.improvements) } : {}),
+      ...(list(fb.suggestions) ? { suggestions: list(fb.suggestions) } : {}),
+    };
+    a.edited = true;
+  }
+  if (req.body?.note !== undefined) a.note = cleanMultiline(req.body.note, 1000);
+  saveState();
+  pushAnalysis(a);
+  res.json({ analysis: publicAnalysis(a) });
+});
+app.get('/api/master/analyses/:id/shot/:kind', requireMaster, (req, res) => {
+  const a = Object.values(state.analyses).find((x) => x.id === req.params.id);
+  const kind = req.params.kind === 'mobile' ? 'mobile' : 'desktop';
+  if (!a?.shots?.[kind]) return res.status(404).json({ error: '화면 캡처가 없습니다.' });
+  res.type('image/jpeg').sendFile(path.join(ANALYSIS_DIR, `${a.id}-${kind}.jpg`));
+});
+
+// ---------------------------------------------------------------------------
 // 과제 (교사가 만들고, 학생은 과제를 골라 제출)
 // ---------------------------------------------------------------------------
 const cleanMultiline = (s, max) => String(s ?? '').replace(/\r\n?/g, '\n').replace(/[\u0000-\u0009\u000b-\u001f]/g, '').trim().slice(0, max);
@@ -1106,6 +1267,7 @@ function readAssignment(body, a) {
     a.dueAt = t;
   }
   if ('allowLate' in body) a.allowLate = !!body.allowLate;
+  if ('criteria' in body) a.criteria = cleanMultiline(body.criteria, 1500); // AI 분석용 평가 기준 (한 줄에 하나)
   if ('closed' in body) a.closed = !!body.closed;
   return null;
 }
@@ -1650,7 +1812,18 @@ function linksXlsx(courseId, scopeId) {
     title: f.name, url: f.url, at: f.uploadedAt, late: f.late,
   })));
   const shown = scopeId ? list.filter((a) => a.id === scopeId) : list;
+  // AI 분석 결과 (있는 것만)
+  const analyses = students.flatMap((s) => s.files.filter((f) => f.kind === 'link' && inScope(f) && state.analyses[f.id]?.feedback).map((f) => {
+    const fb = state.analyses[f.id].feedback;
+    return {
+      seat: s.seat, name: s.name, url: f.url, summary: fb.summary || '', strengths: (fb.strengths || []).join('\n'),
+      improvements: (fb.improvements || []).join('\n'), suggestions: (fb.suggestions || []).join('\n'),
+      criteria: (fb.criteria || []).map((c) => `${c.criterion}: ${c.status}`).join('\n'), security: (fb.security_notes || []).join('\n'),
+      note: state.analyses[f.id].note || '',
+    };
+  }));
   return buildLinksWorkbook({
+    analyses,
     links,
     assignmentTitles: shown.map((a) => a.title),
     status: students.map((s) => ({ seat: s.seat, name: s.name, cells: shown.map((a) => submitStatus(filesOf(s, a.id))) })),
