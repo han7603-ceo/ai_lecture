@@ -172,6 +172,16 @@ function connectSocket() {
     renderInbox();
   });
   if (!GUEST) bindScreenSocket();
+  socket.on('analysis:update', (a) => {
+    S.analyses ||= [];
+    const i = S.analyses.findIndex((x) => x.id === a.id);
+    if (i >= 0) S.analyses[i] = a; else S.analyses.push(a);
+    if (!$('#anModal').classList.contains('hidden')) renderAnalysis(a.id);
+  });
+  socket.on('analysis:remove', ({ id }) => {
+    S.analyses = (S.analyses || []).filter((x) => x.id !== id);
+    if (!$('#anModal').classList.contains('hidden')) renderAnalysis();
+  });
   socket.on('guests:update', (list) => { S.guests = list; renderGuests(); });
   socket.on('inbox:remove', ({ ids }) => { S.inbox = S.inbox.filter((m) => !ids.includes(m.id)); renderInbox(); });
   socket.on('inbox:imap', (st) => { S.inboxImap = st; renderInbox(); });
@@ -236,6 +246,7 @@ function renderCourseBar() {
   $('#joinInfoBtn').disabled = !c;
   $('#zipAllBtn').disabled = !c;
   $('#pptBtn').disabled = !c;
+  $('#analyzeBtn').disabled = !c;
   if (!c) return;
   $('#courseName').textContent = c.name;
   $('#courseCode').textContent = c.code;
@@ -520,7 +531,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     if (!$('#matPvModal').classList.contains('hidden')) return closeMatPreview();
     if (screen) return closeScreen();
-    closeDetail(); closeModal('#joinModal'); closeModal('#settingsModal'); closeModal('#materialsModal'); closeModal('#inboxModal'); closeModal('#assignModal');
+    closeDetail(); closeModal('#joinModal'); closeModal('#settingsModal'); closeModal('#materialsModal'); closeModal('#inboxModal'); closeModal('#assignModal'); closeModal('#anModal');
   }
   if (detailId && !e.target.closest('input, textarea, select')) {
     if (e.key === 'ArrowLeft') stepDetail(-1);
@@ -815,7 +826,7 @@ $('#joinInfoBtn').addEventListener('click', openJoin);
 $('#codeChip').addEventListener('click', openJoin);
 $('#joinClose').addEventListener('click', () => closeModal('#joinModal'));
 function closeModal(sel) { $(sel).classList.add('hidden'); }
-for (const id of ['#joinModal', '#settingsModal', '#materialsModal', '#matPvModal', '#inboxModal', '#assignModal']) {
+for (const id of ['#joinModal', '#settingsModal', '#materialsModal', '#matPvModal', '#inboxModal', '#assignModal', '#anModal']) {
   $(id).addEventListener('click', (e) => { if (e.target.id === id.slice(1) || e.target.closest('[data-close]')) closeModal(id); });
 }
 
@@ -995,6 +1006,7 @@ function editAssignment(a) {
   $('#amDesc').value = a.desc;
   $('#amDue').value = toLocalInput(a.dueAt);
   $('#amLate').checked = a.allowLate;
+  $('#amCriteria').value = a.criteria || '';
   $('#amFormTitle').textContent = `과제 편집 — ${a.title}`;
   $('#amSave').textContent = '💾 저장';
   $('#amCancel').classList.remove('hidden');
@@ -1019,7 +1031,7 @@ $('#amForm').addEventListener('submit', async (e) => {
   const title = $('#amTitle').value.trim();
   if (!title) { toast('과제 이름을 입력해 주세요.', 'error'); return $('#amTitle').focus(); }
   const dueAt = fromLocalInput($('#amDue').value);
-  const body = { title, desc: $('#amDesc').value, dueAt, allowLate: $('#amLate').checked };
+  const body = { title, desc: $('#amDesc').value, dueAt, allowLate: $('#amLate').checked, criteria: $('#amCriteria').value };
   const editing = editingAssign && assignById(editingAssign);
   // 마감을 미래로 다시 잡으면 '마감하기'로 닫아 둔 과제도 다시 연다
   if (editing && editing.closed && dueAt && dueAt > Date.now()) body.closed = false;
@@ -1095,11 +1107,150 @@ function renderAssignList() {
         h('button', { class: 'btn sm', onclick: () => editAssignment(a) }, '✏️ 편집'),
         st === 'closed' ? h('button', { class: 'btn sm', onclick: () => reopenAssignment(a) }, '🔓 다시 열기')
           : h('button', { class: 'btn sm', onclick: () => closeAssignment(a) }, '⏹ 지금 마감'),
+        h('button', { class: 'btn sm', title: '이 과제에 낸 링크를 AI 로 분석', onclick: () => { closeModal('#assignModal'); openAnalysis(a.id); } }, '🔍 분석'),
         h('button', { class: 'btn sm', onclick: () => downloadAssignZip(a) }, '🗜️ ZIP'),
         h('button', { class: 'btn sm', title: '이 과제에 낸 파일·링크만 지우기 (과제는 남음)', onclick: () => clearFiles(`/api/master/assignments/${a.id}/clear-submissions`, `'${a.title}' 과제`,
           courseStudents().reduce((n, s) => n + s.files.filter((f) => aidOf(f) === a.id).length, 0)) }, '🧹 제출물 비우기'),
         h('button', { class: 'icon-btn', title: '과제 삭제', onclick: () => deleteAssignment(a) }, '🗑️'))));
   }
+}
+
+// ------------------------------------------------------------ 과제 링크 AI 분석
+let anAssignId = null;
+const editingAn = new Set(); // 교사가 고치는 중인 카드는 실시간 갱신으로 덮어쓰지 않음
+const analysisOf = (fileId) => (S.analyses || []).find((x) => x.fileId === fileId);
+const fmtUsd = (n) => (n >= 0.01 ? `$${n.toFixed(2)}` : n > 0 ? '$0.01 미만' : '$0');
+function anTargets() {
+  return courseStudents().flatMap((s) => s.files.filter((f) => f.kind === 'link' && aidOf(f) === anAssignId).map((f) => ({ s, f, a: analysisOf(f.id) })));
+}
+function openAnalysis(assignmentId) {
+  const list = courseAssignments();
+  if (!list.length) return toast('먼저 📝 과제 관리에서 과제를 만들어 주세요. 학생이 과제를 골라 낸 링크를 분석합니다.', 'info', 4000);
+  anAssignId = assignmentId || filterAssign()?.id || anAssignId;
+  if (!list.some((a) => a.id === anAssignId)) anAssignId = list[list.length - 1].id;
+  $('#anAssign').replaceChildren(...list.map((a) => h('option', { value: a.id, selected: a.id === anAssignId }, `📝 ${a.title}`)));
+  $('#anModal').classList.remove('hidden');
+  renderAnalysis();
+}
+$('#analyzeBtn').addEventListener('click', () => openAnalysis());
+$('#anAssign').addEventListener('change', (e) => { anAssignId = e.target.value; editingAn.clear(); renderAnalysis(); });
+async function runAnalysis(force) {
+  const targets = anTargets();
+  if (!targets.length) return toast('이 과제에 제출된 링크가 없습니다.');
+  const n = force ? targets.length : targets.filter((t) => !t.a || t.a.status === 'error').length;
+  if (!n) return toast('이미 모두 분석했습니다. 다시 하려면 「↻ 모두 다시 분석」을 누르세요.');
+  const info = S.analysisInfo || {};
+  const cost = info.apiKey ? `\n예상 비용: 링크 1개에 약 $0.1~0.3 (총 약 ${fmtUsd(n * 0.1)}~${fmtUsd(n * 0.3)})` : '\nAPI 키가 없어 자동 점검·화면 캡처만 합니다.';
+  if (!(await confirmDialog(`링크 ${n}개를 분석할까요?${cost}\n\n한 번에 2개씩 처리하며, 1개에 30초~1분쯤 걸립니다. 창을 닫아도 계속 진행됩니다.`, { ok: '분석 시작' }))) return;
+  try {
+    const r = await api(`/api/master/assignments/${anAssignId}/analyze`, { method: 'POST', body: { force }, headers: H() });
+    S.analysisInfo = { apiKey: r.apiKey, capture: r.capture, model: r.model };
+    toast(`링크 ${r.queued}개를 분석 대기열에 넣었습니다.`, 'ok');
+  } catch (e) { toast(e.message, 'error'); }
+}
+$('#anRun').addEventListener('click', () => runAnalysis(false));
+$('#anRerun').addEventListener('click', () => runAnalysis(true));
+
+function renderAnalysis(onlyId) {
+  const targets = anTargets();
+  const info = S.analysisInfo || {};
+  const warn = [];
+  if (!info.apiKey) warn.push('⚠️ Anthropic API 키(ANTHROPIC_API_KEY)가 설정되지 않아 <b>AI 피드백 없이</b> 자동 점검·화면 캡처만 합니다. Railway Variables 에 키를 넣으면 피드백까지 만들어집니다.');
+  if (!info.capture) warn.push('⚠️ 서버에 크롬이 없어 <b>화면 캡처 없이</b> 코드만 분석합니다.');
+  $('#anWarn').innerHTML = warn.join('<br>');
+  $('#anWarn').classList.toggle('hidden', !warn.length);
+  const done = targets.filter((t) => t.a?.status === 'done').length;
+  const busy = targets.filter((t) => ['queued', 'running'].includes(t.a?.status)).length;
+  const cost = targets.reduce((n, t) => n + (t.a?.usage?.cost || 0), 0);
+  $('#anStatus').textContent = targets.length
+    ? `링크 ${targets.length}개 · 완료 ${done}${busy ? ` · 진행 중 ${busy}` : ''}${cost ? ` · 사용 비용 약 ${fmtUsd(cost)}` : ''}${info.model ? ` · ${info.model}` : ''}`
+    : '이 과제에 제출된 링크가 없습니다.';
+  if (onlyId) {
+    const t = targets.find((x) => x.a?.id === onlyId);
+    const old = t && $(`#anList [data-file="${t.f.id}"]`);
+    if (old && !editingAn.has(t.f.id)) return old.replaceWith(anCard(t));
+    if (old) return;
+  }
+  $('#anList').replaceChildren(...(targets.length ? targets.map(anCard) : [h('p', { class: 'muted center' }, '학생이 이 과제를 골라 링크를 내면 여기서 분석할 수 있습니다.')]));
+}
+
+const AN_STATUS = { queued: ['대기', ''], running: ['분석 중…', 'warn'], done: ['완료', 'ok'], error: ['실패', 'danger'] };
+function factChips(fx) {
+  const chips = [];
+  const chip = (cls, text, title) => chips.push(h('span', { class: `an-chip ${cls}`, title: title || '' }, text));
+  if (!fx.ok) chip('bad', fx.status ? `접속 오류 ${fx.status}` : '접속 실패');
+  else chip('good', `접속 OK${fx.loadMs ? ` · ${(fx.loadMs / 1000).toFixed(1)}초` : ''}`);
+  if (!fx.https) chip('bad', 'HTTPS 아님');
+  if (fx.deploy) chip('good', `배포: ${fx.deploy}`);
+  if (fx.supabase?.used) chip('good', 'Supabase 사용');
+  if (fx.aiApis?.length) chip('info', `AI API: ${fx.aiApis.join(', ')}`, '브라우저 코드에서 AI API 를 직접 부르면 키가 노출될 수 있습니다');
+  for (const k of fx.leakedKeys || []) chip('bad', `🔑 키 노출: ${k.kind}`, k.masked);
+  if (fx.ok) chip(fx.viewport && fx.mobileOverflow !== true ? 'good' : 'warn', fx.viewport ? (fx.mobileOverflow ? '모바일: 가로 넘침' : '모바일 대응') : '모바일 설정 없음');
+  if (fx.canvas) chip('info', '캔버스(게임)');
+  if (fx.consoleErrors?.length) chip('warn', `JS 오류 ${fx.consoleErrors.length}`, fx.consoleErrors.join('\n'));
+  if (fx.imgNoAlt) chip('warn', `대체 텍스트 없는 그림 ${fx.imgNoAlt}`);
+  return chips;
+}
+const shotUrl = (a, kind) => `/api/master/analyses/${a.id}/shot/${kind}?t=${encodeURIComponent(token)}&v=${a.shots[kind]}`;
+function anCard({ s, f, a }) {
+  const st = a ? AN_STATUS[a.status] : ['미분석', ''];
+  const fb = a?.feedback;
+  const card = h('div', { class: `an-card ${a?.status || ''}`, 'data-file': f.id });
+  const listEdit = (key, label) => h('label', { class: 'an-field' }, h('span', {}, label),
+    h('textarea', { class: 'input', rows: Math.max(2, (fb[key] || []).length + 1), 'data-key': key, oninput: () => editingAn.add(f.id) }, (fb[key] || []).join('\n')));
+  card.append(
+    h('div', { class: 'an-head' },
+      h('span', { class: 'seat-no' }, s.seat), h('strong', {}, s.name),
+      h('a', { class: 'an-url', href: f.url, target: '_blank', rel: 'noopener noreferrer', title: f.url }, f.name),
+      f.late ? h('span', { class: 'atag late' }, '지각') : null,
+      h('span', { class: `badge ${st[1]}` }, st[0]),
+      a?.usage?.cost ? h('span', { class: 'muted small' }, fmtUsd(a.usage.cost)) : null,
+      h('div', { class: 'spacer' }),
+      h('button', { class: 'btn sm', disabled: ['queued', 'running'].includes(a?.status), onclick: async () => {
+        try { await api(`/api/master/files/${f.id}/analyze`, { method: 'POST', headers: H() }); editingAn.delete(f.id); } catch (e) { toast(e.message, 'error'); }
+      } }, a ? '↻ 다시' : '🔍 분석')));
+  if (!a) return card;
+  if (a.error) card.append(h('p', { class: 'an-error' }, `❗ ${a.error}`));
+  if (a.facts) {
+    card.append(h('div', { class: 'an-chips' }, factChips(a.facts)));
+    const shots = ['desktop', 'mobile'].filter((k) => a.shots?.[k]);
+    if (shots.length) {
+      card.append(h('div', { class: 'an-shots' }, shots.map((k) => h('a', { href: shotUrl(a, k), target: '_blank', rel: 'noopener', title: '크게 보기' },
+        h('img', { class: `an-shot ${k}`, src: shotUrl(a, k), alt: k === 'mobile' ? '모바일 화면' : 'PC 화면', loading: 'lazy' })))));
+    }
+    if (a.facts.notes?.length) card.append(h('p', { class: 'muted small' }, a.facts.notes.join(' · ')));
+  }
+  if (a.skipped) card.append(h('p', { class: 'muted small' }, a.skipped));
+  if (fb) {
+    if (fb.security_notes?.length) card.append(h('div', { class: 'an-security' }, h('b', {}, '🔒 보안'), h('ul', {}, fb.security_notes.map((x) => h('li', {}, x)))));
+    if (fb.criteria?.length) {
+      card.append(h('table', { class: 'an-criteria' }, h('tbody', {}, fb.criteria.map((c) => h('tr', {},
+        h('td', {}, c.criterion), h('td', { class: `an-st st-${['충족', '부분 충족', '미충족', '확인 불가'].indexOf(c.status)}` }, c.status), h('td', { class: 'muted small' }, c.note))))));
+    }
+    const summary = h('textarea', { class: 'input', rows: 2, 'data-key': 'summary', oninput: () => editingAn.add(f.id) }, fb.summary || '');
+    const note = h('textarea', { class: 'input', rows: 1, placeholder: '교사 메모 (선택)', oninput: () => editingAn.add(f.id) }, a.note || '');
+    const grid = h('div', { class: 'an-grid' }, listEdit('strengths', '👍 잘된 점'), listEdit('improvements', '🤔 아쉬운 점'), listEdit('suggestions', '💡 제안'));
+    card.append(
+      h('label', { class: 'an-field' }, h('span', {}, `📝 총평${a.edited ? ' (교사 수정)' : ''}`), summary),
+      grid,
+      h('label', { class: 'an-field' }, h('span', {}, '🗒️ 메모'), note),
+      h('div', { class: 'an-actions' },
+        h('span', { class: 'muted small' }, '한 줄에 하나씩 · AI 초안이니 확인 후 사용하세요'),
+        h('button', { class: 'btn sm primary', onclick: async () => {
+          const lines = (k) => grid.querySelector(`[data-key="${k}"]`).value.split('\n').map((x) => x.trim()).filter(Boolean);
+          try {
+            const r = await api(`/api/master/analyses/${a.id}`, { method: 'PATCH', headers: H(), body: {
+              feedback: { summary: summary.value, strengths: lines('strengths'), improvements: lines('improvements'), suggestions: lines('suggestions') }, note: note.value,
+            } });
+            editingAn.delete(f.id);
+            const i = S.analyses.findIndex((x) => x.id === a.id);
+            if (i >= 0) S.analyses[i] = r.analysis;
+            renderAnalysis(a.id);
+            toast('저장했습니다.', 'ok');
+          } catch (e) { toast(e.message, 'error'); }
+        } }, '💾 저장')));
+  }
+  return card;
 }
 
 // ------------------------------------------------------------ PPT (과제별 보기면 그 과제만)

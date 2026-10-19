@@ -41,6 +41,7 @@
         <button class="btn master-only" id="materialsBtn">📤 자료 보내기</button>
         <button class="btn master-only" id="inboxBtn">📬 인증 메일 <span class="badge danger hidden" id="inboxCount"></span></button>
         <button class="btn master-only" id="zipAllBtn">🗜️ 전체 ZIP</button>
+        <button class="btn master-only" id="analyzeBtn" title="학생이 낸 링크를 열어 자동 점검·화면 캡처·AI 피드백">🔍 AI 분석</button>
         <button class="btn master-only" id="pptBtn" title="학생마다 1장: 링크·QR·미리보기 그림·이미지 제출물 (과제를 고르면 그 과제만)">📊 PPT</button>
         <button class="btn master-only" id="settingsBtn">⚙️ 설정</button>
         <button class="btn ghost" id="logoutBtn" title="로그아웃">⎋</button>
@@ -164,6 +165,26 @@
     </div>
   </div>
 
+  <!-- 과제 URL AI 분석 -->
+  <div class="modal-bg hidden" id="anModal">
+    <div class="modal analysis">
+      <div class="modal-head">
+        <strong>🔍 과제 링크 AI 분석</strong>
+        <select class="input sort" id="anAssign" aria-label="분석할 과제"></select>
+        <div class="spacer"></div>
+        <button class="icon-btn" data-close aria-label="닫기">✕</button>
+      </div>
+      <div class="an-bar">
+        <span id="anStatus" class="muted small"></span>
+        <div class="spacer"></div>
+        <button class="btn primary sm" id="anRun">▶ 분석 시작</button>
+        <button class="btn sm" id="anRerun">↻ 모두 다시 분석</button>
+      </div>
+      <div class="an-warn hidden" id="anWarn"></div>
+      <div class="modal-body an-list" id="anList"></div>
+    </div>
+  </div>
+
   <!-- 과제 관리 -->
   <div class="modal-bg hidden" id="assignModal">
     <div class="modal assign">
@@ -184,6 +205,7 @@
             </div>
           </div>
           <label class="switch-row"><input type="checkbox" id="amLate"> 마감 뒤에도 받기 (‘지각’으로 표시)</label>
+          <label class="field"><span>평가 기준 <span class="muted small">(선택 · 🔍 AI 분석에 쓰임 · 한 줄에 하나)</span></span><textarea class="input" id="amCriteria" maxlength="1500" rows="3" placeholder="예) Netlify 로 배포되어 접속된다&#10;Supabase 에서 데이터를 읽고 쓴다&#10;API 키가 화면 쪽 코드에 노출되지 않는다&#10;모바일에서도 화면이 깨지지 않는다"></textarea></label>
           <div class="row-actions">
             <button type="button" class="btn ghost hidden" id="amCancel">편집 취소</button>
             <button type="submit" class="btn primary" id="amSave">＋ 과제 만들기</button>

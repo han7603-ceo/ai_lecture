@@ -18,7 +18,7 @@ const FONT = 'Malgun Gothic';
  * @param {Array} o.status [{ seat, name, cells: ['제출'|'지각'|'미제출', ...] }]
  * @param {string[]} o.assignmentTitles 제출 현황 열 이름
  */
-async function buildLinksWorkbook({ links, status, assignmentTitles, timeZone }) {
+async function buildLinksWorkbook({ links, status, assignmentTitles, timeZone, analyses = [] }) {
   const wb = new ExcelJS.Workbook();
   wb.creator = '실시간 과제 제출 보드';
   const fmt = (t) => (t ? new Date(t).toLocaleString('ko-KR', { timeZone }) : '');
@@ -57,6 +57,21 @@ async function buildLinksWorkbook({ links, status, assignmentTitles, timeZone })
     }
     styleHeader(st);
   }
+  if (analyses.length) {
+    const an = wb.addWorksheet('AI 분석', { views: [{ state: 'frozen', ySplit: 1, xSplit: 2 }] });
+    an.columns = [
+      { header: '자리', key: 'seat', width: 6 }, { header: '이름', key: 'name', width: 12 }, { header: '주소', key: 'url', width: 36 },
+      { header: '총평', key: 'summary', width: 40 }, { header: '잘된 점', key: 'strengths', width: 50 }, { header: '아쉬운 점', key: 'improvements', width: 50 },
+      { header: '제안', key: 'suggestions', width: 40 }, { header: '평가 기준', key: 'criteria', width: 36 }, { header: '보안', key: 'security', width: 36 },
+      { header: '교사 메모', key: 'note', width: 30 },
+    ];
+    for (const r of analyses) {
+      const row = an.addRow(r);
+      row.alignment = { vertical: 'top', wrapText: true };
+      row.getCell('url').value = { text: r.url, hyperlink: r.url };
+    }
+    styleHeader(an);
+  }
   return Buffer.from(await wb.xlsx.writeBuffer());
 }
 function styleHeader(ws) {
@@ -90,7 +105,10 @@ const dataUri = (buf, type) => `image/${type};base64,${buf.toString('base64')}`;
 
 // ------------------------------------------------------------ 링크 미리보기 그림 (og:image)
 // 학생이 낸 주소를 서버가 직접 읽으므로, 내부망(사설 IP)·이상한 포트로는 가지 않음
+// 시험용: ALLOW_PRIVATE_FETCH=1 이면 내부 주소도 허용 (테스트 서버가 localhost 라서)
+const allowPrivate = () => process.env.ALLOW_PRIVATE_FETCH === '1';
 function privateIp(ip) {
+  if (allowPrivate()) return false;
   if (net.isIPv4(ip)) {
     const [a, b] = ip.split('.').map(Number);
     return a === 0 || a === 10 || a === 127 || a >= 224 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31)
@@ -100,10 +118,11 @@ function privateIp(ip) {
   if (x.startsWith('::ffff:')) return privateIp(x.slice(7));
   return x === '::' || x === '::1' || x.startsWith('fc') || x.startsWith('fd') || x.startsWith('fe80');
 }
+// 결과: { ok, status, headers, url, type, buf } / 막히거나 연결 실패면 null
 async function safeFetch(url, { maxBytes, timeoutMs = 6000, accept = '*/*' }) {
   for (let hop = 0; hop < 4; hop++) {
     const u = new URL(url);
-    if (!['http:', 'https:'].includes(u.protocol) || (u.port && !['80', '443'].includes(u.port))) return null;
+    if (!['http:', 'https:'].includes(u.protocol) || (u.port && !['80', '443'].includes(u.port) && !allowPrivate())) return null;
     const addrs = await dns.lookup(u.hostname, { all: true }).catch(() => []);
     if (!addrs.length || addrs.some((a) => privateIp(a.address))) return null;
     const res = await fetch(u.href, {
@@ -113,7 +132,7 @@ async function safeFetch(url, { maxBytes, timeoutMs = 6000, accept = '*/*' }) {
     });
     const loc = res.headers.get('location');
     if (res.status >= 300 && res.status < 400 && loc) { url = new URL(loc, u).href; continue; }
-    if (!res.ok || !res.body) return null;
+    if (!res.ok || !res.body) return { ok: false, status: res.status, headers: res.headers, url: u.href, type: res.headers.get('content-type') || '', buf: Buffer.alloc(0) };
     const chunks = [];
     let size = 0;
     for await (const c of res.body) {
@@ -121,14 +140,14 @@ async function safeFetch(url, { maxBytes, timeoutMs = 6000, accept = '*/*' }) {
       if (size > maxBytes) { if (accept.startsWith('image')) return null; break; } // 그림은 너무 크면 포기, HTML 은 앞부분만
       chunks.push(c);
     }
-    return { url: u.href, type: res.headers.get('content-type') || '', buf: Buffer.concat(chunks) };
+    return { ok: true, status: res.status, headers: res.headers, url: u.href, type: res.headers.get('content-type') || '', buf: Buffer.concat(chunks) };
   }
   return null;
 }
 async function linkPreview(url) {
   try {
     const page = await safeFetch(url, { maxBytes: 600 * 1024, accept: 'text/html,application/xhtml+xml' });
-    if (!page) return null;
+    if (!page?.ok) return null;
     let img = null;
     if (/^image\//.test(page.type)) img = page; // 주소 자체가 그림
     else {
@@ -142,7 +161,7 @@ async function linkPreview(url) {
       if (!src) return null;
       img = await safeFetch(new URL(src, page.url).href, { maxBytes: 4 * 1024 * 1024, accept: 'image/png,image/jpeg,image/gif' });
     }
-    const info = img && imageInfo(img.buf);
+    const info = img?.ok && imageInfo(img.buf);
     return info && info.w > 0 && info.h > 0 ? { ...info, data: dataUri(img.buf, info.type) } : null;
   } catch {
     return null;
@@ -266,4 +285,4 @@ async function buildPptx({ title, scope, students, missing, uploadDir }) {
   return pres.write({ outputType: 'nodebuffer' });
 }
 
-module.exports = { buildLinksWorkbook, buildPptx, imageInfo, privateIp };
+module.exports = { buildLinksWorkbook, buildPptx, imageInfo, privateIp, safeFetch };
