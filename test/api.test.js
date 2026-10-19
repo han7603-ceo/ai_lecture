@@ -631,6 +631,51 @@ test('학생 링크 여러 개 한 번에 제출: 모두 같은 과제로, 하�
   assert.equal((await call('POST', '/api/student/links', { student: st, body: { links: many } })).status, 400, '한 번에 20개까지');
 });
 
+test('내보내기: ZIP 안 링크모음.xlsx(하이퍼링크·제출 현황), 발표용 PPT(학생별 슬라이드·이미지·링크·미제출)', async () => {
+  const JSZip = require('jszip');
+  const ExcelJS = require('exceljs');
+  const QR = require('qrcode');
+  const { data: { token } } = await call('POST', '/api/master/login', { body: { password: 'test-pw' } });
+  const { data: { course } } = await call('POST', '/api/master/courses', { token, body: { name: '발표반', maxStudents: 4 } });
+  const a = (await call('POST', `/api/master/courses/${course.id}/assignments`, { token, body: { title: '포스터' } })).data.assignment;
+  const st = (await call('POST', '/api/join', { body: { code: course.code, name: '발표학생', pin: '1234' } })).data.token;
+  await call('POST', '/api/join', { body: { code: course.code, name: '안낸학생', pin: '1234' } });
+  const f = new FormData();
+  f.append('files', new Blob([await QR.toBuffer('img', { width: 120 })], { type: 'image/png' }), '시안.png');
+  await call('POST', `/api/student/upload?a=${a.id}`, { student: st, body: f });
+  // 사설 IP 주소는 서버가 미리보기를 가져오지 않음 → QR 로 대신
+  await call('POST', '/api/student/links', { student: st, body: { links: [{ url: 'https://10.0.0.1/secret', title: '내부 주소' }, { url: 'https://192.168.0.1/x' }], assignmentId: a.id } });
+
+  const zip = await JSZip.loadAsync((await call('GET', `/api/master/assignments/${a.id}/zip?t=${token}`)).data);
+  const xName = Object.keys(zip.files).find((n) => n.endsWith('링크모음.xlsx'));
+  assert.ok(xName, 'ZIP 에 링크모음.xlsx');
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(await zip.file(xName).async('nodebuffer'));
+  const ws = wb.getWorksheet('링크 모음');
+  assert.equal(ws.getRow(2).getCell(4).value, '내부 주소');
+  assert.equal(ws.getRow(2).getCell(5).value.hyperlink, 'https://10.0.0.1/secret');
+  const stat = wb.getWorksheet('제출 현황');
+  assert.deepEqual(stat.getRow(1).values.slice(1), ['자리', '이름', '포스터']);
+  assert.deepEqual([stat.getRow(2).getCell(3).value, stat.getRow(3).getCell(3).value], ['제출', '미제출']);
+  const czip = await JSZip.loadAsync((await call('GET', `/api/master/courses/${course.id}/zip?t=${token}`)).data);
+  assert.ok(Object.keys(czip.files).some((n) => n.endsWith('발표반/링크모음.xlsx')), '전체 ZIP 에도');
+
+  const ppt = await call('GET', `/api/master/courses/${course.id}/pptx?t=${token}&a=${a.id}`);
+  assert.equal(ppt.status, 200);
+  assert.match(ppt.headers.get('content-type'), /presentationml/);
+  const pz = await JSZip.loadAsync(ppt.data);
+  const slides = Object.keys(pz.files).filter((n) => /^ppt\/slides\/slide\d+\.xml$/.test(n));
+  assert.equal(slides.length, 3, '표지 + 학생 1명 + 미제출');
+  const xml = await pz.file('ppt/slides/slide2.xml').async('string');
+  const rels = await pz.file('ppt/slides/_rels/slide2.xml.rels').async('string');
+  assert.ok(xml.includes('발표학생') && xml.includes('내부 주소'));
+  assert.ok(rels.includes('https://10.0.0.1/secret'), '링크가 눌러서 열림');
+  assert.ok(Object.keys(pz.files).filter((n) => n.startsWith('ppt/media/')).length >= 3, '이미지 제출물 + QR 2개');
+  assert.ok((await pz.file('ppt/slides/slide3.xml').async('string')).includes('안낸학생'));
+  assert.equal((await call('GET', `/api/master/courses/${course.id}/pptx?t=${token}&a=nope`)).status, 404);
+  assert.equal((await call('GET', `/api/master/courses/${course.id}/pptx`)).status, 401);
+});
+
 test('공용 PC 모드: 과목 설정이 입장 확인·입장·개인 링크 응답에 전달됨', async () => {
   const { data: { token } } = await call('POST', '/api/master/login', { body: { password: 'test-pw' } });
   const { data: { course } } = await call('POST', '/api/master/courses', { token, body: { name: 'PC실', maxStudents: 3 } });

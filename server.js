@@ -19,6 +19,7 @@ const multer = require('multer');
 const { startImapInbox } = require('./inbox-imap');
 const archiver = require('archiver');
 const QRCode = require('qrcode');
+const { buildLinksWorkbook, buildPptx } = require('./export-office');
 const { Server } = require('socket.io');
 
 // ---------------------------------------------------------------------------
@@ -1630,14 +1631,31 @@ function submitStatus(files) {
 const csvRow = (cells) => cells.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',');
 const fmtTime = (t) => (t ? new Date(t).toLocaleString('ko-KR', { timeZone: TIME_ZONE }) : '');
 const fileLabel = (f) => `${f.late ? '[지각] ' : ''}${f.kind === 'link' ? `${f.name} (${f.url})` : f.name}`;
-function sendZip(res, zipName, fill) {
+async function sendZip(res, zipName, fill) {
   res.attachment(zipName);
   // 이미 압축된 미디어가 대부분이라 빠른 압축 레벨 사용
   const archive = archiver('zip', { zlib: { level: 1 } });
   archive.on('error', (err) => { console.error(err); res.destroy(err); });
   archive.pipe(res);
-  fill(archive);
+  try { await fill(archive); } catch (err) { console.error(err); }
   archive.finalize();
+}
+// 링크 모음 엑셀: 범위(assignmentId: undefined=전체, null=기타, id=그 과제) 안의 링크 + 학생 × 과제 제출 현황
+function linksXlsx(courseId, scopeId) {
+  const list = assignmentsOf(courseId);
+  const students = studentsOf(courseId);
+  const inScope = (f) => scopeId === undefined || (f.assignmentId && state.assignments[f.assignmentId] ? f.assignmentId : null) === scopeId;
+  const links = students.flatMap((s) => s.files.filter((f) => f.kind === 'link' && inScope(f)).map((f) => ({
+    seat: s.seat, name: s.name, assignment: state.assignments[f.assignmentId]?.title || (list.length ? '기타' : ''),
+    title: f.name, url: f.url, at: f.uploadedAt, late: f.late,
+  })));
+  const shown = scopeId ? list.filter((a) => a.id === scopeId) : list;
+  return buildLinksWorkbook({
+    links,
+    assignmentTitles: shown.map((a) => a.title),
+    status: students.map((s) => ({ seat: s.seat, name: s.name, cells: shown.map((a) => submitStatus(filesOf(s, a.id))) })),
+    timeZone: TIME_ZONE,
+  });
 }
 const stamp = () => {
   const d = new Date();
@@ -1651,7 +1669,8 @@ app.get('/api/master/courses/:id/zip', requireMaster, (req, res) => {
   const courseName = safeFsName(c.name);
   const folders = assignmentFolders(c.id);
   const list = assignmentsOf(c.id);
-  sendZip(res, `${courseName}_과제_${stamp()}.zip`, (archive) => {
+  sendZip(res, `${courseName}_과제_${stamp()}.zip`, async (archive) => {
+    archive.append(await linksXlsx(c.id), { name: `${courseName}/링크모음.xlsx` });
     const students = studentsOf(c.id);
     for (const s of students) {
       if (!s.files.length) continue;
@@ -1677,7 +1696,8 @@ app.get('/api/master/assignments/:id/zip', requireMaster, (req, res) => {
   const c = a && state.courses[a.courseId];
   if (!c) return res.status(404).json({ error: '과제를 찾을 수 없습니다.' });
   const root = safeFsName(`${c.name}_${a.title}`);
-  sendZip(res, `${root}_${stamp()}.zip`, (archive) => {
+  sendZip(res, `${root}_${stamp()}.zip`, async (archive) => {
+    archive.append(await linksXlsx(c.id, a.id), { name: `${root}/링크모음.xlsx` });
     const students = studentsOf(c.id);
     for (const s of students) {
       const files = filesOf(s, a.id);
@@ -1692,6 +1712,40 @@ app.get('/api/master/assignments/:id/zip', requireMaster, (req, res) => {
       csvRow(['자리', '이름', '상태', '처음 제출', '마지막 제출', '파일 수', '파일 목록'])];
     archive.append('\ufeff' + head.concat(rows).join('\r\n'), { name: `${root}/제출현황.csv` });
   });
+});
+
+// 발표용 PPT: 학생마다 1장 (?a=과제 id, _none=기타, 없으면 모든 제출물)
+app.get('/api/master/courses/:id/pptx', requireMaster, async (req, res) => {
+  const c = getCourse(req, res);
+  if (!c) return;
+  const q = typeof req.query.a === 'string' ? req.query.a : '';
+  const a = q && q !== '_none' ? state.assignments[q] : null;
+  if (q && q !== '_none' && (!a || a.courseId !== c.id)) return res.status(404).json({ error: '과제를 찾을 수 없습니다.' });
+  const scopeId = a ? a.id : q === '_none' ? null : undefined;
+  const hasAssignments = assignmentsOf(c.id).length > 0;
+  const students = [];
+  const missing = [];
+  for (const s of studentsOf(c.id)) {
+    const files = (scopeId === undefined ? s.files : filesOf(s, scopeId)).slice().sort((x, y) => x.uploadedAt - y.uploadedAt);
+    if (!files.length) { missing.push({ seat: s.seat, name: s.name }); continue; }
+    students.push({
+      seat: s.seat, name: s.name,
+      items: files.map((f) => ({
+        kind: f.kind === 'link' ? 'link' : 'file', title: f.name, url: f.url || null, ext: f.ext, late: !!f.late,
+        abs: f.stored ? path.join(UPLOAD_DIR, f.stored) : null,
+        assignment: scopeId === undefined && hasAssignments ? (state.assignments[f.assignmentId]?.title || '기타') : '',
+      })),
+    });
+  }
+  const scope = a ? `과제: ${a.title}` : q === '_none' ? '기타 제출물' : '모든 제출물';
+  try {
+    const buf = await buildPptx({ title: c.name, scope, students, missing });
+    res.attachment(`${safeFsName(`${c.name}_${a ? a.title : scope}`)}_${stamp()}.pptx`);
+    res.type('application/vnd.openxmlformats-officedocument.presentationml.presentation').send(buf);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'PPT 를 만들지 못했습니다.' });
+  }
 });
 
 app.get('/api/master/students/:id/zip', requireMaster, (req, res) => {

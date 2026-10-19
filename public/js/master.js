@@ -235,6 +235,7 @@ function renderCourseBar() {
   $('#noCourse').classList.toggle('hidden', !!c);
   $('#joinInfoBtn').disabled = !c;
   $('#zipAllBtn').disabled = !c;
+  $('#pptBtn').disabled = !c;
   if (!c) return;
   $('#courseName').textContent = c.name;
   $('#courseCode').textContent = c.code;
@@ -954,6 +955,7 @@ function renderAssignSelect() {
     h('option', { value: '_none', selected: assignFilter === '_none' }, '기타 (과제 선택 안 함)'),
   );
   $('#zipAllBtn').textContent = filterAssign() ? '🗜️ 이 과제 ZIP' : '🗜️ 전체 ZIP';
+  $('#pptBtn').textContent = filterAssign() ? '📊 이 과제 PPT' : '📊 PPT';
 }
 $('#assignSelect').addEventListener('change', (e) => { assignFilter = e.target.value; renderAssignmentsAll(); });
 
@@ -1099,6 +1101,16 @@ function renderAssignList() {
         h('button', { class: 'icon-btn', title: '과제 삭제', onclick: () => deleteAssignment(a) }, '🗑️'))));
   }
 }
+
+// ------------------------------------------------------------ PPT (과제별 보기면 그 과제만)
+$('#pptBtn').addEventListener('click', () => {
+  const c = course();
+  if (!c) return;
+  const n = courseStudents().filter((s) => vf(s).length).length;
+  if (!n) return toast('아직 제출한 학생이 없습니다.');
+  location.href = `/api/master/courses/${c.id}/pptx?t=${encodeURIComponent(token)}${assignFilter ? `&a=${encodeURIComponent(assignFilter)}` : ''}`;
+  toast(`PPT 를 만드는 중입니다… 링크 미리보기를 모으느라 ${n > 10 ? '1분 정도' : '몇 초'} 걸릴 수 있습니다.`, 'info', 5000);
+});
 
 // ------------------------------------------------------------ ZIP
 $('#zipAllBtn').addEventListener('click', () => {
