@@ -117,8 +117,13 @@
         <form class="link-submit" id="linkForm" autocomplete="off">
           <span class="link-label">🔗 링크 제출 <span class="muted small">구글 문서·유튜브·캔바·패들렛 등 결과물 주소</span></span>
           <div class="link-row">
-            <input class="input" id="linkUrl" type="text" inputmode="url" placeholder="https://…">
+            <input class="input" id="linkUrl" type="text" inputmode="url" placeholder="https://… (여러 줄 붙여넣기도 가능)">
             <input class="input" id="linkTitle" maxlength="100" placeholder="제목 (선택)">
+            <button class="btn" id="linkAdd" type="button" title="이 링크를 목록에 넣고 다음 링크 입력">＋ 추가</button>
+          </div>
+          <div class="link-pending" id="linkPending"></div>
+          <div class="link-actions">
+            <span class="muted small" id="linkHint">링크가 여러 개면 「＋ 추가」로 모은 뒤 한 번에 제출하세요.</span>
             <button class="btn primary" id="linkBtn" type="submit">링크 제출</button>
           </div>
         </form>
