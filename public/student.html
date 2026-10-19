@@ -46,6 +46,7 @@
       </div>
       <div class="spacer"></div>
       <button class="btn share-btn hidden" id="shareBtn" title="내 화면을 선생님께 보여 주기 (내가 고른 화면만, 언제든 중지 가능)">🖥️ <span class="share-btn-text">화면 보여주기</span></button>
+      <button class="btn msg-btn" id="msgBtn" title="선생님 메시지 · 문의하기">💬<span class="badge danger hidden" id="msgBadge"></span></button>
       <button class="btn leave-btn" id="leaveBtn" title="이 기기에서 나가기 (입장 정보 지우기)">🚪 <span class="leave-text">나가기</span></button>
       <button class="me-chip" id="meChip" title="이름 변경">
         <span class="dot" id="connDot"></span>
@@ -75,6 +76,20 @@
       </div>
 
       <div class="notice danger hidden" id="closedNotice">⛔ 제출이 마감되었습니다. 새 파일을 올릴 수 없습니다.</div>
+
+      <section class="card section msg-section" id="msgSection">
+        <div class="section-head">
+          <h2>💬 선생님 메시지 <span class="badge danger hidden" id="msgNewCount"></span></h2>
+          <button class="btn sm ghost" id="msgToggle">펼치기</button>
+        </div>
+        <div class="msg-body hidden" id="msgBody">
+          <div class="msg-list" id="msgList"></div>
+          <form class="msg-compose" id="msgForm" autocomplete="off">
+            <textarea class="input" id="msgInput" rows="2" maxlength="2000" placeholder="선생님께 문의하기 (예: 과제 제출이 안 돼요)"></textarea>
+            <button class="btn primary" id="msgSend" type="submit">보내기</button>
+          </form>
+        </div>
+      </section>
 
       <section class="card section mat-section hidden" id="matSection">
         <div class="section-head">

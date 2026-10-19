@@ -324,3 +324,30 @@ body.guest .editable small { display: none; }
 .an-field textarea { font: inherit; font-weight: 400; font-size: 13px; resize: vertical; }
 .an-actions { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 @media (max-width: 800px) { .an-grid { grid-template-columns: 1fr; } .an-shot.desktop { width: 220px; height: 130px; } .an-shot.mobile { width: 65px; height: 130px; } }
+
+/* 메시지 */
+#msgBtnT .badge { margin-left: 2px; }
+.modal.messages { width: min(1000px, 100%); height: calc(100dvh - 32px); display: flex; flex-direction: column; }
+.mg-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 260px minmax(0, 1fr); }
+.mg-side { border-right: 1px solid var(--line); overflow: auto; padding: 8px; display: grid; gap: 4px; align-content: start; }
+.mg-item { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 2px 8px; align-items: center; padding: 8px; border-radius: 10px; cursor: pointer; border: 1px solid transparent; text-align: left; background: none; font: inherit; color: inherit; }
+.mg-item:hover { background: var(--panel-2); }
+.mg-item.active { border-color: var(--primary); background: var(--primary-weak); }
+.mg-item .mg-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mg-item .mg-prev { grid-column: 2 / 4; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mg-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.mg-head { padding: 10px 14px; border-bottom: 1px solid var(--line); font-weight: 700; }
+.mg-thread { flex: 1; overflow: auto; padding: 12px 14px; display: grid; gap: 8px; align-content: start; }
+.mg-msg { max-width: 80%; padding: 8px 12px; border-radius: 14px; background: var(--panel-2); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; position: relative; }
+.mg-msg.teacher { justify-self: end; background: var(--primary); color: #fff; border-top-right-radius: 4px; }
+.mg-msg.teacher.feedback { background: #4b5fd6; }
+.mg-msg.notice { justify-self: stretch; max-width: none; background: var(--warn-weak); color: var(--text); border: 1px solid var(--warn); }
+.mg-msg.student { justify-self: start; border-top-left-radius: 4px; }
+.mg-msg.student.unread { box-shadow: 0 0 0 2px var(--danger); }
+.mg-meta { font-size: 11px; opacity: .8; margin-top: 4px; display: flex; gap: 8px; align-items: center; }
+.mg-del { background: none; border: 0; color: inherit; opacity: .7; cursor: pointer; font-size: 11px; padding: 0; text-decoration: underline; }
+.mg-compose { border-top: 1px solid var(--line); padding: 10px 14px; display: grid; gap: 6px; }
+.mg-compose textarea { resize: vertical; font: inherit; }
+.mg-send { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.an-sent { color: var(--ok); font-weight: 700; }
+@media (max-width: 720px) { .mg-body { grid-template-columns: 1fr; grid-template-rows: 150px minmax(0, 1fr); } .mg-side { border-right: 0; border-bottom: 1px solid var(--line); } }

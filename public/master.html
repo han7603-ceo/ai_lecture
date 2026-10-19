@@ -38,6 +38,7 @@
       <div class="spacer"></div>
       <div class="top-actions">
         <button class="btn primary" id="joinInfoBtn">📱 입장 안내 (QR)</button>
+        <button class="btn master-only" id="msgBtnT">💬 메시지 <span class="badge danger hidden" id="msgCountT"></span></button>
         <button class="btn master-only" id="materialsBtn">📤 자료 보내기</button>
         <button class="btn master-only" id="inboxBtn">📬 인증 메일 <span class="badge danger hidden" id="inboxCount"></span></button>
         <button class="btn master-only" id="zipAllBtn">🗜️ 전체 ZIP</button>
@@ -118,6 +119,7 @@
           <div class="detail-actions">
             <a class="btn sm primary master-only" id="dZip">🗜️ 이 학생 ZIP</a>
             <button class="btn sm master-only" id="dScreen" title="학생 화면 보기 (학생이 공유를 수락해야 보임)">🖥️ 화면 보기</button>
+            <button class="btn sm master-only" id="dMsg">💬 메시지</button>
             <button class="btn sm master-only" id="dSendMat">📤 자료 보내기</button>
             <button class="btn sm master-only" id="dKick">🚪 학생 삭제</button>
           </div>
@@ -161,6 +163,27 @@
         <video id="scVideo" autoplay playsinline muted></video>
         <img id="scImg" class="hidden" alt="학생 화면">
         <div class="screen-wait" id="scWait">학생 화면을 기다리는 중…</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 메시지: 공지 · 학생별 대화 -->
+  <div class="modal-bg hidden" id="msgModal">
+    <div class="modal messages">
+      <div class="modal-head"><strong>💬 메시지</strong><span class="muted small" id="mgCourse"></span><div class="spacer"></div><button class="icon-btn" data-close aria-label="닫기">✕</button></div>
+      <div class="mg-body">
+        <aside class="mg-side" id="mgSide"></aside>
+        <section class="mg-main">
+          <div class="mg-head" id="mgHead"></div>
+          <div class="mg-thread" id="mgThread"></div>
+          <form class="mg-compose" id="mgForm" autocomplete="off">
+            <textarea class="input" id="mgInput" rows="3" maxlength="2000"></textarea>
+            <div class="mg-send">
+              <span class="muted small" id="mgHint"></span>
+              <button class="btn primary" id="mgSend" type="submit">보내기</button>
+            </div>
+          </form>
+        </section>
       </div>
     </div>
   </div>
