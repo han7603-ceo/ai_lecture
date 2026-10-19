@@ -178,6 +178,25 @@ function connectSocket() {
     if (i >= 0) S.analyses[i] = a; else S.analyses.push(a);
     if (!$('#anModal').classList.contains('hidden')) renderAnalysis(a.id);
   });
+  socket.on('message:update', (m) => {
+    S.messages ||= [];
+    const i = S.messages.findIndex((x) => x.id === m.id);
+    const isNew = i < 0;
+    if (i >= 0) S.messages[i] = m; else S.messages.push(m);
+    if (isNew && m.from === 'student') {
+      const st = students.get(m.studentId);
+      const viewing = !$('#msgModal').classList.contains('hidden') && mgTarget === m.studentId;
+      if (viewing) markThreadRead(m.studentId);
+      else if (st?.courseId === courseId) toast(`💬 ${st.seat}번 ${st.name}: ${m.text.slice(0, 40)}`, 'ok', 6000);
+    }
+    renderMsgCount();
+    if (!$('#msgModal').classList.contains('hidden')) renderMessages();
+  });
+  socket.on('message:remove', ({ id }) => {
+    S.messages = (S.messages || []).filter((x) => x.id !== id);
+    renderMsgCount();
+    if (!$('#msgModal').classList.contains('hidden')) renderMessages();
+  });
   socket.on('analysis:remove', ({ id }) => {
     S.analyses = (S.analyses || []).filter((x) => x.id !== id);
     if (!$('#anModal').classList.contains('hidden')) renderAnalysis();
@@ -221,6 +240,7 @@ function connectSocket() {
 // ------------------------------------------------------------ 렌더링
 function renderAll() {
   store.set('lb_course', courseId);
+  if (!GUEST) renderMsgCount();
   renderSiteTitle();
   renderCourseSelect();
   renderCourseBar();
@@ -247,6 +267,7 @@ function renderCourseBar() {
   $('#zipAllBtn').disabled = !c;
   $('#pptBtn').disabled = !c;
   $('#analyzeBtn').disabled = !c;
+  $('#msgBtnT').disabled = !c;
   if (!c) return;
   $('#courseName').textContent = c.name;
   $('#courseCode').textContent = c.code;
@@ -531,7 +552,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     if (!$('#matPvModal').classList.contains('hidden')) return closeMatPreview();
     if (screen) return closeScreen();
-    closeDetail(); closeModal('#joinModal'); closeModal('#settingsModal'); closeModal('#materialsModal'); closeModal('#inboxModal'); closeModal('#assignModal'); closeModal('#anModal');
+    closeDetail(); closeModal('#joinModal'); closeModal('#settingsModal'); closeModal('#materialsModal'); closeModal('#inboxModal'); closeModal('#assignModal'); closeModal('#anModal'); closeModal('#msgModal');
   }
   if (detailId && !e.target.closest('input, textarea, select')) {
     if (e.key === 'ArrowLeft') stepDetail(-1);
@@ -826,7 +847,7 @@ $('#joinInfoBtn').addEventListener('click', openJoin);
 $('#codeChip').addEventListener('click', openJoin);
 $('#joinClose').addEventListener('click', () => closeModal('#joinModal'));
 function closeModal(sel) { $(sel).classList.add('hidden'); }
-for (const id of ['#joinModal', '#settingsModal', '#materialsModal', '#matPvModal', '#inboxModal', '#assignModal', '#anModal']) {
+for (const id of ['#joinModal', '#settingsModal', '#materialsModal', '#matPvModal', '#inboxModal', '#assignModal', '#anModal', '#msgModal']) {
   $(id).addEventListener('click', (e) => { if (e.target.id === id.slice(1) || e.target.closest('[data-close]')) closeModal(id); });
 }
 
@@ -1235,7 +1256,12 @@ function anCard({ s, f, a }) {
       grid,
       h('label', { class: 'an-field' }, h('span', {}, '🗒️ 메모'), note),
       h('div', { class: 'an-actions' },
-        h('span', { class: 'muted small' }, '한 줄에 하나씩 · AI 초안이니 확인 후 사용하세요'),
+        h('span', { class: 'muted small' }, a.sentAt ? h('span', { class: 'an-sent' }, `📨 학생에게 보냄 · ${timeAgo(a.sentAt)}`) : '한 줄에 하나씩 · AI 초안이니 확인 후 사용하세요'),
+        h('button', { class: 'btn sm', title: '저장한 피드백을 학생에게 메시지로 (보내기 전에 고칠 수 있음)', onclick: () => {
+          const asg = assignById(a.assignmentId);
+          closeModal('#anModal');
+          openMessages(s.id, feedbackText(asg?.title, a.feedback), a.id);
+        } }, a.sentAt ? '📨 다시 보내기' : '📨 학생에게 보내기'),
         h('button', { class: 'btn sm primary', onclick: async () => {
           const lines = (k) => grid.querySelector(`[data-key="${k}"]`).value.split('\n').map((x) => x.trim()).filter(Boolean);
           try {
@@ -1252,6 +1278,99 @@ function anCard({ s, f, a }) {
   }
   return card;
 }
+
+// ------------------------------------------------------------ 메시지 (공지 · 학생별 대화 · 학생 문의)
+let mgTarget = 'notice'; // 'notice' 또는 학생 id
+let mgAnalysisId = null; // AI 분석 피드백을 보내는 중이면 그 분석 id
+const courseMessages = () => (S.messages || []).filter((m) => m.courseId === courseId);
+const unreadQuestions = (sid) => courseMessages().filter((m) => m.from === 'student' && !m.readAt && (!sid || m.studentId === sid));
+const mgTime = (t) => new Date(t).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+function renderMsgCount() {
+  const n = unreadQuestions().length;
+  $('#msgCountT').textContent = n;
+  $('#msgCountT').classList.toggle('hidden', !n);
+}
+function feedbackText(title, fb) {
+  if (!fb) return '';
+  const list = (label, items) => (items?.length ? `\n${label}\n${items.map((x) => `- ${x}`).join('\n')}\n` : '');
+  return [`📝 ${title ? `[${title}] ` : ''}과제 피드백`, '', fb.summary || '', list('👍 잘된 점', fb.strengths), list('🤔 아쉬운 점', fb.improvements),
+    list('💡 이렇게 해 보세요', fb.suggestions), list('🔒 보안', fb.security_notes)].join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+function openMessages(target = null, prefill = '', analysisId = null) {
+  if (!course()) return;
+  if (target) mgTarget = target;
+  if (mgTarget !== 'notice' && students.get(mgTarget)?.courseId !== courseId) mgTarget = 'notice';
+  mgAnalysisId = analysisId;
+  $('#mgCourse').textContent = course().name;
+  $('#msgModal').classList.remove('hidden');
+  $('#mgInput').value = prefill;
+  renderMessages();
+  if (mgTarget !== 'notice') markThreadRead(mgTarget);
+  setTimeout(() => $('#mgInput').focus(), 50);
+}
+$('#msgBtnT').addEventListener('click', () => openMessages());
+function markThreadRead(sid) {
+  if (!unreadQuestions(sid).length) return;
+  for (const m of unreadQuestions(sid)) m.readAt = Date.now();
+  renderMsgCount();
+  api(`/api/master/students/${sid}/messages/read`, { method: 'POST', headers: H() }).catch(() => {});
+}
+function renderMessages() {
+  const list = courseMessages();
+  const lastOf = (sid) => list.filter((m) => m.studentId === sid).at(-1);
+  const studentsNow = courseStudents().sort((a, b) => unreadQuestions(b.id).length - unreadQuestions(a.id).length
+    || (lastOf(b.id)?.at || 0) - (lastOf(a.id)?.at || 0) || a.seat - b.seat);
+  const notices = list.filter((m) => !m.studentId);
+  const item = (key, icon, name, prev, unread) => h('button', { type: 'button', class: `mg-item ${mgTarget === key ? 'active' : ''}`, onclick: () => {
+    mgTarget = key; mgAnalysisId = null; renderMessages(); if (key !== 'notice') markThreadRead(key); $('#mgInput').focus();
+  } }, icon, h('span', { class: 'mg-name' }, name), unread ? h('span', { class: 'badge danger' }, unread) : h('span'), h('span', { class: 'mg-prev' }, prev || ''));
+  $('#mgSide').replaceChildren(
+    item('notice', '📢', '전체 공지', notices.at(-1)?.text, 0),
+    ...studentsNow.map((st) => item(st.id, h('span', { class: 'seat-no' }, st.seat), st.name, lastOf(st.id)?.text, unreadQuestions(st.id).length)));
+
+  const total = courseStudents().length;
+  const del = (m) => h('button', { type: 'button', class: 'mg-del', onclick: async () => {
+    if (!(await confirmDialog('이 메시지를 지울까요?\n학생 화면에서도 사라집니다.', { ok: '삭제', danger: true }))) return;
+    try { await api(`/api/master/messages/${m.id}`, { method: 'DELETE', headers: H() }); } catch (e) { toast(e.message, 'error'); }
+  } }, '삭제');
+  let thread;
+  if (mgTarget === 'notice') {
+    $('#mgHead').textContent = `📢 전체 공지 — 이 과목 학생 ${total}명 모두에게 보입니다 (나중에 입장한 학생 포함)`;
+    thread = notices.map((m) => h('div', { class: 'mg-msg notice' }, m.text, h('div', { class: 'mg-meta' }, mgTime(m.at), `읽음 ${Math.min(m.reads || 0, total)}/${total}`, del(m))));
+    $('#mgInput').placeholder = '전체 학생에게 보낼 공지 (예: 오늘 과제는 18시까지 링크로 제출하세요)';
+    $('#mgSend').textContent = '📢 공지 보내기';
+  } else {
+    const st = students.get(mgTarget);
+    $('#mgHead').textContent = `${st.seat}번 ${st.name} ${st.online ? '· 🟢 접속 중' : `· 마지막 접속 ${timeAgo(st.lastSeen)}`}`;
+    thread = list.filter((m) => m.studentId === st.id).map((m) => {
+      const fromT = m.from === 'teacher';
+      return h('div', { class: `mg-msg ${fromT ? `teacher ${m.kind}` : `student ${m.readAt ? '' : 'unread'}`}` }, m.text,
+        h('div', { class: 'mg-meta' }, mgTime(m.at), fromT ? (m.readAt ? '읽음' : '안 읽음') : '', fromT ? del(m) : null));
+    });
+    $('#mgInput').placeholder = mgAnalysisId ? 'AI 피드백 초안입니다. 고친 뒤 보내세요.' : `${st.name} 학생에게 보낼 메시지`;
+    $('#mgSend').textContent = mgAnalysisId ? '📨 피드백 보내기' : '보내기';
+  }
+  $('#mgHint').textContent = 'Ctrl+Enter 로 보내기 · 학생 화면에 알림 창으로 뜹니다';
+  const box = $('#mgThread');
+  box.replaceChildren(...(thread.length ? thread : [h('p', { class: 'muted center' }, mgTarget === 'notice' ? '보낸 공지가 없습니다.' : '아직 주고받은 메시지가 없습니다.')]));
+  box.scrollTop = box.scrollHeight;
+}
+$('#mgForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const text = $('#mgInput').value.trim();
+  if (!text) return $('#mgInput').focus();
+  const body = mgTarget === 'notice' ? { text } : { text, studentIds: [mgTarget], analysisId: mgAnalysisId || undefined };
+  $('#mgSend').disabled = true;
+  try {
+    const r = await api(`/api/master/courses/${courseId}/messages`, { method: 'POST', body, headers: H() });
+    for (const m of r.messages) if (!S.messages.some((x) => x.id === m.id)) S.messages.push(m);
+    $('#mgInput').value = '';
+    if (mgAnalysisId) toast('피드백을 학생에게 보냈습니다.', 'ok');
+    mgAnalysisId = null;
+    renderMessages();
+  } catch (err) { toast(err.message, 'error'); } finally { $('#mgSend').disabled = false; }
+});
+$('#mgInput').addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) $('#mgForm').requestSubmit(); });
 
 // ------------------------------------------------------------ PPT (과제별 보기면 그 과제만)
 $('#pptBtn').addEventListener('click', () => {
@@ -1396,6 +1515,7 @@ function openMaterials(preselectId) {
   $('#materialsModal').classList.remove('hidden');
 }
 $('#materialsBtn').addEventListener('click', () => openMaterials());
+$('#dMsg').addEventListener('click', () => { const id = detailId; closeDetail(); openMessages(id); });
 $('#dSendMat').addEventListener('click', () => { const id = detailId; closeDetail(); openMaterials(id); });
 
 // 파일 선택

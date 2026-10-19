@@ -77,7 +77,7 @@ const ctx = document.querySelector('canvas').getContext('2d'); ctx.fillStyle = '
     },
     stdio: 'ignore',
   });
-  for (let i = 0; i < 50; i++) {
+  for (let i = 0; i < 150; i++) {
     try { await fetch(`${BASE}/api/public/config`); return; } catch { await new Promise((r) => setTimeout(r, 100)); }
   }
   throw new Error('server did not start');
@@ -153,6 +153,13 @@ test('과제 링크 분석: 자동 점검·화면 캡처·AI 피드백·교사 �
 
   // 다시 분석하지 않으면 대기열에 안 넣음, force 면 넣음
   assert.equal((await call('POST', `/api/master/assignments/${a.id}/analyze`, { token, body: {} })).data.queued, 0);
+
+  // 피드백을 학생에게 메시지로 → 학생 화면에 '과제 피드백', 분석에 보낸 시각
+  const sent = await call('POST', `/api/master/courses/${course.id}/messages`, { token, body: { text: '📝 피드백 본문', studentIds: [sub.student.id], analysisId: an.id } });
+  assert.equal(sent.data.messages[0].kind, 'feedback');
+  assert.ok((await call('GET', '/api/master/state', { token })).data.analyses.find((x) => x.id === an.id).sentAt);
+  const stMsgs = await fetch(`${BASE}/api/student/me`, { headers: { 'x-student-token': st } }).then((r) => r.json());
+  assert.deepEqual(stMsgs.messages.map((m) => [m.kind, m.text]), [['feedback', '📝 피드백 본문']]);
 
   // 학생이 링크를 지우면 분석도 지움
   await fetch(`${BASE}/api/student/files/${fileId}`, { method: 'DELETE', headers: { 'x-student-token': st } });

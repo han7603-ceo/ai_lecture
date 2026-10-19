@@ -141,3 +141,28 @@ body.shared-pc .leave-btn { background: var(--danger-weak); border-color: var(--
 .qr-modal { width: min(360px, 100%); text-align: center; padding: 20px; }
 .qr-modal img { width: 260px; height: 260px; max-width: 100%; margin: 10px auto; display: block; }
 .qr-modal .qr-url { font-size: 11px; color: var(--muted); word-break: break-all; }
+
+/* 메시지 */
+.msg-btn { flex: none; margin-right: 8px; position: relative; }
+.msg-btn .badge { position: absolute; top: -6px; right: -6px; font-size: 11px; padding: 0 6px; }
+.msg-section .section-head { align-items: center; }
+.msg-list { display: grid; gap: 8px; max-height: 360px; overflow: auto; padding: 4px 2px; }
+.msg-empty { text-align: center; margin: 8px 0; }
+.msg { max-width: 85%; padding: 8px 12px; border-radius: 14px; background: var(--panel-2); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; }
+.msg.teacher { justify-self: start; border-top-left-radius: 4px; }
+.msg.notice { justify-self: stretch; max-width: none; background: var(--warn-weak); border: 1px solid var(--warn); }
+.msg.feedback { background: var(--primary-weak); }
+.msg.mine { justify-self: end; background: var(--primary); color: #fff; border-top-right-radius: 4px; }
+.msg.unread { box-shadow: 0 0 0 2px var(--danger); }
+.msg .msg-meta { font-size: 11px; opacity: .75; margin-top: 4px; }
+.msg-tag { font-size: 11px; font-weight: 800; margin-bottom: 2px; }
+.msg-compose { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; margin-top: 10px; align-items: end; }
+.msg-compose textarea { resize: vertical; font: inherit; }
+.msg-pop { width: min(460px, 100%); padding: 20px; }
+.msg-pop .msg-pop-item { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--panel-2); border-radius: 12px; padding: 10px 12px; margin: 8px 0; max-height: 50vh; overflow: auto; }
+.msg-pop .msg-pop-item.notice { background: var(--warn-weak); }
+/* 메시지 알림·QR 창은 휴대폰에서도 작은 창으로 */
+.modal.msg-pop, .modal.qr-modal { height: auto; max-height: calc(100dvh - 32px); overflow: auto; }
+@media (max-width: 640px) {
+  .modal.msg-pop, .modal.qr-modal { height: auto; max-height: calc(100dvh - 32px); width: calc(100% - 32px); border-radius: var(--radius); }
+}

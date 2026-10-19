@@ -151,6 +151,8 @@ function enterMain() {
   renderHeader();
   renderMyLink();
   renderShare();
+  renderMessages();
+  if (unreadTeacher().length) popMessages(unreadTeacher()); // 입장했을 때 안 읽은 메시지가 있으면 바로 보여 줌
   renderMaterials();
   renderAssignments();
   renderHeader();
@@ -287,7 +289,7 @@ function connectSocket() {
     if (shareStream) socket.emit('screen:state', { sharing: true }); // 끊겼다 이어져도 공유 상태 유지
     // 다시 연결되면 끊긴 동안 바뀐 과제·자료를 새로 받음
     if (connectedOnce) {
-      try { me = await api('/api/student/me', { headers: authHeaders() }); renderHeader(); renderMaterials(); renderAssignments(); renderHeader(); renderDone(); } catch { /* connect_error 에서 처리 */ }
+      try { me = await api('/api/student/me', { headers: authHeaders() }); renderHeader(); renderMessages(); renderMaterials(); renderAssignments(); renderHeader(); renderDone(); } catch { /* connect_error 에서 처리 */ }
     }
     connectedOnce = true;
   });
@@ -320,6 +322,18 @@ function connectSocket() {
   });
   socket.on('kicked', kicked);
   bindScreen();
+  socket.on('message:new', (m) => {
+    me.messages ||= [];
+    if (me.messages.some((x) => x.id === m.id)) return;
+    me.messages.push(m);
+    renderMessages();
+    if (m.from === 'teacher') popMessages([m]);
+  });
+  socket.on('message:update', (m) => {
+    const i = (me.messages || []).findIndex((x) => x.id === m.id);
+    if (i >= 0) { me.messages[i] = m; renderMessages(); }
+  });
+  socket.on('message:remove', ({ id }) => { me.messages = (me.messages || []).filter((x) => x.id !== id); renderMessages(); });
   socket.on('material:new', (m) => {
     const i = me.materials.findIndex((x) => x.id === m.id);
     if (i >= 0) me.materials[i] = m;
@@ -830,3 +844,86 @@ $('#myLinkQr').addEventListener('click', () => {
       h('button', { class: 'btn primary block', style: 'margin-top:12px', onclick: close }, '닫기')));
   document.body.append(bg);
 });
+
+// ------------------------------------------------------------ 메시지 (공지·선생님 메시지·내 문의)
+const KIND_TAG = { notice: '📢 공지', feedback: '📝 과제 피드백', dm: '💬 선생님' };
+const unreadTeacher = () => (me.messages || []).filter((m) => m.from === 'teacher' && !m.read);
+const msgTime = (t) => new Date(t).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+function renderMessages() {
+  const list = me.messages || [];
+  const unread = unreadTeacher().length;
+  for (const [id, show] of [['#msgBadge', unread], ['#msgNewCount', unread]]) {
+    $(id).textContent = unread;
+    $(id).classList.toggle('hidden', !show);
+  }
+  const box = $('#msgList');
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  box.replaceChildren(...(list.length ? list.map((m) => {
+    const mine = m.from === 'student';
+    return h('div', { class: `msg ${mine ? 'mine' : `teacher ${m.kind}`} ${!mine && !m.read ? 'unread' : ''}` },
+      !mine ? h('div', { class: 'msg-tag' }, KIND_TAG[m.kind] || '💬 선생님') : null,
+      m.text,
+      h('div', { class: 'msg-meta' }, msgTime(m.at), mine ? (m.read ? ' · 선생님이 읽음' : ' · 안 읽음') : ''));
+  }) : [h('p', { class: 'muted small msg-empty' }, '아직 메시지가 없습니다. 궁금한 점은 아래에 남겨 주세요.')]));
+  if (atBottom || !box.dataset.ready) box.scrollTop = box.scrollHeight;
+  box.dataset.ready = '1';
+  if (unread && !msgOpen) setMsgOpen(true);
+}
+let msgOpen = false;
+function setMsgOpen(open) {
+  msgOpen = open;
+  $('#msgBody').classList.toggle('hidden', !open);
+  $('#msgToggle').textContent = open ? '접기' : `펼치기${(me.messages || []).length ? ` (${me.messages.length})` : ''}`;
+  if (open) $('#msgList').scrollTop = $('#msgList').scrollHeight;
+}
+$('#msgToggle').addEventListener('click', () => setMsgOpen(!msgOpen));
+$('#msgBtn').addEventListener('click', () => {
+  setMsgOpen(true);
+  $('#msgSection').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  setTimeout(() => $('#msgInput').focus(), 300);
+});
+$('#msgForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const text = $('#msgInput').value.trim();
+  if (!text) return $('#msgInput').focus();
+  $('#msgSend').disabled = true;
+  try {
+    const r = await api('/api/student/messages', { method: 'POST', body: { text }, headers: authHeaders() });
+    me.messages ||= [];
+    if (!me.messages.some((x) => x.id === r.message.id)) me.messages.push(r.message);
+    $('#msgInput').value = '';
+    renderMessages();
+    toast('선생님께 문의를 보냈습니다.', 'ok');
+  } catch (err) { toast(err.message, 'error', 4000); } finally { $('#msgSend').disabled = false; }
+});
+$('#msgInput').addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) $('#msgForm').requestSubmit(); });
+
+// 선생님 메시지가 오면 화면에 바로 띄움 → 「확인」을 누르면 읽음
+let popItems = [];
+let popEl = null;
+function popMessages(items) {
+  for (const m of items) if (!popItems.some((x) => x.id === m.id)) popItems.push(m);
+  if (!popItems.length) return;
+  if (!popEl) {
+    popEl = h('div', { class: 'modal-bg' }, h('div', { class: 'modal msg-pop' }));
+    document.body.append(popEl);
+  }
+  const close = async () => {
+    const ids = popItems.map((m) => m.id);
+    popItems = [];
+    popEl?.remove();
+    popEl = null;
+    for (const m of me.messages || []) if (ids.includes(m.id)) m.read = true;
+    renderMessages();
+    try { await api('/api/student/messages/read', { method: 'POST', body: { ids }, headers: authHeaders() }); } catch { /* 다음 접속 때 다시 */ }
+  };
+  popEl.firstChild.replaceChildren(
+    h('h3', { style: 'margin:0' }, popItems.length > 1 ? `선생님 메시지 ${popItems.length}개` : (KIND_TAG[popItems[0].kind] || '💬 선생님 메시지')),
+    ...popItems.map((m) => h('div', { class: `msg-pop-item ${m.kind}` }, popItems.length > 1 ? h('div', { class: 'msg-tag' }, KIND_TAG[m.kind] || '💬') : null, m.text,
+      h('div', { class: 'msg-meta muted small' }, msgTime(m.at)))),
+    h('div', { class: 'row-actions', style: 'display:flex;gap:8px;justify-content:flex-end' },
+      h('button', { class: 'btn', onclick: () => { close(); $('#msgBtn').click(); } }, '답장하기'),
+      h('button', { class: 'btn primary', onclick: close }, '확인')),
+  );
+  navigator.vibrate?.(150);
+}

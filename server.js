@@ -52,9 +52,21 @@ const ALLOWED_EXT = new Set([
   'wav', 'wave', 'mp3', 'm4a', 'ogg', 'aac',
   // 문서
   'pdf', 'hwp', 'hwpx', 'doc', 'docx', 'ppt', 'pptx', 'pps', 'ppsx', 'xls', 'xlsx', 'csv', 'txt',
+  // 웹 (격리된 창에서만 실행)
+  'html', 'htm',
   // 기타
   'zip',
 ]);
+// 파일을 보여 줄 때의 형식은 업로드한 브라우저가 알려 준 값이 아니라 확장자로 정함 (위장 파일 방지)
+const MIME_BY_EXT = {
+  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', heic: 'image/heic',
+  mp4: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm', m4v: 'video/x-m4v',
+  wav: 'audio/wav', wave: 'audio/wav', mp3: 'audio/mpeg', m4a: 'audio/mp4', ogg: 'audio/ogg', aac: 'audio/aac',
+  pdf: 'application/pdf', txt: 'text/plain; charset=utf-8', csv: 'text/csv; charset=utf-8',
+  html: 'text/html; charset=utf-8', htm: 'text/html; charset=utf-8', zip: 'application/zip',
+};
+const mimeOf = (ext) => MIME_BY_EXT[ext] || 'application/octet-stream';
+const isHtml = (ext) => ext === 'html' || ext === 'htm';
 // LibreOffice 로 PDF 변환을 시도할 확장자
 const CONVERTIBLE_EXT = new Set(['doc', 'docx', 'ppt', 'pptx', 'pps', 'ppsx', 'xls', 'xlsx', 'hwp']);
 
@@ -85,6 +97,7 @@ function loadState() {
     s.mailboxes ||= {};
     s.assignments ||= {};
     s.analyses ||= {};
+    s.messages ||= {};
     return s;
   } catch {
     return {
@@ -97,6 +110,7 @@ function loadState() {
       mailboxes: {},
       assignments: {},
       analyses: {},
+      messages: {},
     };
   }
 }
@@ -416,6 +430,8 @@ const toMastersOnly = (event, payload) => io.to('master').emit(event, payload);
 // ---------------------------------------------------------------------------
 // 미들웨어
 // ---------------------------------------------------------------------------
+// 주소(입장 토큰 등)가 다른 사이트나 학생 HTML 로 새어 나가지 않게
+app.use((req, res, next) => { res.setHeader('Referrer-Policy', 'no-referrer'); next(); });
 app.use(express.json({ limit: '100kb' }));
 
 function getToken(req, header) {
@@ -599,6 +615,7 @@ app.get('/api/student/me', requireStudent, (req, res) => {
     materials: materialsFor(req.student).map((m) => studentMaterial(m, req.student.id)),
     assignments: assignmentsOf(req.course.id).map(publicAssignment),
     iceServers: ICE_SERVERS,
+    messages: messagesForStudent(req.student),
   });
 });
 
@@ -762,13 +779,46 @@ function resolveFileAccess(req) {
   return { owner, file: owner.files.find((f) => f.id === fileId) };
 }
 
+// HTML 은 토큰 없는 짧은 서명 주소(10분)로만 열고, 격리(sandbox)해서 이 사이트의 로그인 정보에 접근 못 하게 함
+const VIEW_KEY = crypto.randomBytes(32);
+const viewSig = (kind, id, exp) => crypto.createHmac('sha256', VIEW_KEY).update(`${kind}:${id}:${exp}`).digest('base64url');
+function viewUrl(kind, id) {
+  const exp = Date.now() + 10 * 60000;
+  return `/view/${kind}/${id}?e=${exp}&s=${viewSig(kind, id, exp)}`;
+}
+function sendSafe(res, abs, ext) {
+  const headers = { 'Content-Type': mimeOf(ext), 'X-Content-Type-Options': 'nosniff' };
+  if (isHtml(ext)) {
+    headers['Content-Security-Policy'] = 'sandbox allow-scripts allow-forms allow-modals allow-popups allow-pointer-lock';
+    headers['Cache-Control'] = 'no-store';
+  }
+  res.sendFile(abs, { headers });
+}
+app.get('/view/:kind/:id', (req, res) => {
+  const { kind, id } = req.params;
+  const exp = Number(req.query.e);
+  const sig = String(req.query.s || '');
+  const good = viewSig(kind, id, exp);
+  if (!(exp > Date.now()) || sig.length !== good.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(good))) {
+    return res.status(403).type('text/plain; charset=utf-8').send('보기 주소가 만료되었습니다. 원래 화면에서 다시 열어 주세요.');
+  }
+  let rec = null;
+  let base = UPLOAD_DIR;
+  if (kind === 'f') rec = findFile(id)?.f;
+  else if (kind === 'm') { rec = state.materials[id]; base = DATA_DIR; }
+  if (!rec?.stored || !isHtml(rec.ext)) return res.status(404).send('파일을 찾을 수 없습니다.');
+  sendSafe(res, path.join(base, rec.stored), rec.ext);
+});
+
 app.get('/files/:fileId', (req, res) => {
   const a = resolveFileAccess(req);
   if (!a) return res.status(404).send('파일을 찾을 수 없습니다.');
   if (a.file.kind === 'link') return res.redirect(302, a.file.url);
   const abs = path.join(UPLOAD_DIR, a.file.stored);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
   if (req.query.download) return res.download(abs, a.file.name);
-  res.sendFile(abs, { headers: { 'Content-Type': a.file.mime || 'application/octet-stream' } });
+  if (isHtml(a.file.ext)) return res.redirect(302, viewUrl('f', a.file.id));
+  sendSafe(res, abs, a.file.ext);
 });
 
 // LibreOffice 로 문서를 PDF 로 변환 (순차 처리 + 결과 캐시)
@@ -887,6 +937,7 @@ app.get('/api/master/state', requireMaster, (req, res) => {
     assignments: Object.values(state.assignments).map(publicAssignment),
     iceServers: ICE_SERVERS,
     analyses: Object.values(state.analyses).filter((a) => findFile(a.fileId)).map(publicAnalysis),
+    messages: Object.values(state.messages).map(teacherMessage),
     analysisInfo: analysisInfo(),
     publicUrl,
     publicUrlSource,
@@ -1002,6 +1053,7 @@ app.post('/api/master/courses/:id/end', requireMaster, (req, res) => {
 
 async function removeStudent(s) {
   for (const f of s.files) dropAnalysis(f.id);
+  for (const m of Object.values(state.messages)) if (m.studentId === s.id) delete state.messages[m.id];
   delete state.students[s.id];
   await fsp.rm(path.join(UPLOAD_DIR, s.courseId, s.id), { recursive: true, force: true });
   toStudent(s.id, 'kicked', {});
@@ -1055,6 +1107,7 @@ app.delete('/api/master/courses/:id', requireMaster, async (req, res) => {
   await fsp.rm(path.join(UPLOAD_DIR, c.id), { recursive: true, force: true });
   for (const m of materialsOfCourse(c.id)) delete state.materials[m.id];
   for (const a of assignmentsOf(c.id)) delete state.assignments[a.id];
+  for (const m of Object.values(state.messages)) if (m.courseId === c.id) delete state.messages[m.id];
   await fsp.rm(path.join(MATERIAL_DIR, c.id), { recursive: true, force: true });
   delete state.courses[c.id];
   for (const g of Object.values(state.guests)) if (g.courseId === c.id) dropGuest(g.id);
@@ -1098,6 +1151,110 @@ app.delete('/api/master/students/:id/files/:fileId', requireMaster, async (req, 
 //   seen:   { studentId: 처음 연 시각 } — 교사 화면의 '확인' 표시
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+// 메시지: 공지(과목 전체) · 학생 개인 메시지 · 학생 문의 (교사 ↔ 학생 1:1, 참관자에게는 안 보임)
+// ---------------------------------------------------------------------------
+// { id, courseId, studentId(null=공지), from: 'teacher'|'student', kind: 'notice'|'dm'|'feedback'|'question',
+//   text, at, readAt(받는 쪽이 읽은 시각), reads(공지: 학생별 읽은 시각), analysisId? }
+const MSG_MAX = 2000;
+const teacherMessage = (m) => ({
+  id: m.id, courseId: m.courseId, studentId: m.studentId, from: m.from, kind: m.kind, text: m.text, at: m.at,
+  readAt: m.readAt || null, reads: m.studentId ? undefined : Object.keys(m.reads || {}).length,
+});
+const studentMessage = (m, sid) => ({
+  id: m.id, from: m.from, kind: m.kind, text: m.text, at: m.at,
+  read: m.studentId ? !!m.readAt : !!m.reads?.[sid], // 교사 메시지를 내가 읽었는지 / 내 문의를 교사가 읽었는지
+});
+const messagesForStudent = (st) => Object.values(state.messages)
+  .filter((m) => m.courseId === st.courseId && (m.studentId === st.id || (!m.studentId && m.at >= (st.joinedAt || 0) - 7 * 86400000)))
+  .sort((a, b) => a.at - b.at).map((m) => studentMessage(m, st.id));
+function deliverMessage(m) {
+  io.to('master').emit('message:update', teacherMessage(m));
+  if (m.studentId) toStudent(m.studentId, 'message:new', studentMessage(m, m.studentId));
+  else for (const st of studentsOf(m.courseId)) toStudent(st.id, 'message:new', studentMessage(m, st.id));
+}
+function newMessage(fields) {
+  const m = { id: newId(), at: Date.now(), readAt: null, ...fields };
+  if (!m.studentId) m.reads = {};
+  state.messages[m.id] = m;
+  saveState();
+  deliverMessage(m);
+  return m;
+}
+const msgText = (t) => cleanMultiline(t, MSG_MAX);
+
+// 교사 → 공지(전체) 또는 선택한 학생들에게 개인 메시지
+app.post('/api/master/courses/:id/messages', requireMaster, (req, res) => {
+  const c = getCourse(req, res);
+  if (!c) return;
+  const text = msgText(req.body?.text);
+  if (!text) return res.status(400).json({ error: '보낼 내용을 입력해 주세요.' });
+  const ids = Array.isArray(req.body?.studentIds) ? req.body.studentIds : null;
+  if (!ids) return res.json({ messages: [teacherMessage(newMessage({ courseId: c.id, studentId: null, from: 'teacher', kind: 'notice', text }))] });
+  const targets = ids.map((id) => state.students[id]).filter((st) => st && st.courseId === c.id);
+  if (!targets.length) return res.status(400).json({ error: '받을 학생을 골라 주세요.' });
+  const analysis = req.body?.analysisId && Object.values(state.analyses).find((x) => x.id === req.body.analysisId);
+  const out = targets.map((st) => newMessage({
+    courseId: c.id, studentId: st.id, from: 'teacher', kind: analysis ? 'feedback' : 'dm', text, analysisId: analysis?.id || undefined,
+  }));
+  if (analysis) { analysis.sentAt = Date.now(); saveState(); pushAnalysis(analysis); }
+  res.json({ messages: out.map(teacherMessage) });
+});
+// 교사가 학생 문의를 읽음
+app.post('/api/master/students/:id/messages/read', requireMaster, (req, res) => {
+  const st = state.students[req.params.id];
+  if (!st) return res.status(404).json({ error: '학생을 찾을 수 없습니다.' });
+  const now = Date.now();
+  for (const m of Object.values(state.messages)) {
+    if (m.studentId !== st.id || m.from !== 'student' || m.readAt) continue;
+    m.readAt = now;
+    io.to('master').emit('message:update', teacherMessage(m));
+    toStudent(st.id, 'message:update', studentMessage(m, st.id));
+  }
+  saveState();
+  res.json({ ok: true });
+});
+app.delete('/api/master/messages/:id', requireMaster, (req, res) => {
+  const m = state.messages[req.params.id];
+  if (!m) return res.status(404).json({ error: '메시지를 찾을 수 없습니다.' });
+  delete state.messages[m.id];
+  saveState();
+  io.to('master').emit('message:remove', { id: m.id });
+  if (m.studentId) toStudent(m.studentId, 'message:remove', { id: m.id });
+  else toCourse(m.courseId, 'message:remove', { id: m.id });
+  res.json({ ok: true });
+});
+
+// 학생 → 선생님 문의 (도배 방지: 10분에 20개)
+const questionTimes = new Map(); // studentId -> [시각]
+app.post('/api/student/messages', requireStudent, (req, res) => {
+  const text = msgText(req.body?.text);
+  if (!text) return res.status(400).json({ error: '문의할 내용을 입력해 주세요.' });
+  const now = Date.now();
+  const recent = (questionTimes.get(req.student.id) || []).filter((t) => now - t < 10 * 60000);
+  if (recent.length >= 20) return res.status(429).json({ error: '문의를 너무 많이 보냈습니다. 잠시 뒤 다시 보내 주세요.' });
+  recent.push(now);
+  questionTimes.set(req.student.id, recent);
+  const m = newMessage({ courseId: req.course.id, studentId: req.student.id, from: 'student', kind: 'question', text });
+  res.json({ message: studentMessage(m, req.student.id) });
+});
+// 학생이 선생님 메시지를 읽음
+app.post('/api/student/messages/read', requireStudent, (req, res) => {
+  const ids = new Set(Array.isArray(req.body?.ids) ? req.body.ids : []);
+  const sid = req.student.id;
+  const now = Date.now();
+  for (const id of ids) {
+    const m = state.messages[id];
+    if (!m || m.from !== 'teacher' || m.courseId !== req.course.id) continue;
+    if (m.studentId === sid && !m.readAt) m.readAt = now;
+    else if (!m.studentId && !m.reads[sid]) m.reads[sid] = now;
+    else continue;
+    io.to('master').emit('message:update', teacherMessage(m));
+  }
+  saveState();
+  res.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
 // 과제 URL 분석 (교사 전용): 학생이 낸 링크를 열어 자동 점검·화면 캡처 → AI 피드백 초안
 // ---------------------------------------------------------------------------
 const ANALYSIS_CONCURRENCY = 2;
@@ -1106,7 +1263,7 @@ let analysisRunning = 0;
 const publicAnalysis = (a) => ({
   id: a.id, fileId: a.fileId, studentId: a.studentId, assignmentId: a.assignmentId, url: a.url,
   status: a.status, error: a.error || null, facts: a.facts || null, feedback: a.feedback || null, skipped: a.skipped || null,
-  note: a.note || '', edited: !!a.edited, shots: a.shots || {}, usage: a.usage || null, model: a.model || null,
+  note: a.note || '', edited: !!a.edited, shots: a.shots || {}, usage: a.usage || null, model: a.model || null, sentAt: a.sentAt || null,
   queuedAt: a.queuedAt, doneAt: a.doneAt || null,
 });
 const pushAnalysis = (a) => io.to('master').emit('analysis:update', publicAnalysis(a));
@@ -1500,8 +1657,10 @@ app.get('/materials/:id', (req, res) => {
   // 링크: 확인 기록을 남긴 뒤 원래 주소로 이동
   if (a.m.kind === 'link') return res.redirect(302, a.m.url);
   const abs = path.join(DATA_DIR, a.m.stored);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
   if (req.query.download) return res.download(abs, a.m.name);
-  res.sendFile(abs, { headers: { 'Content-Type': a.m.mime || 'application/octet-stream' } });
+  if (isHtml(a.m.ext)) return res.redirect(302, viewUrl('m', a.m.id));
+  sendSafe(res, abs, a.m.ext);
 });
 
 app.get('/materials/:id/pdf', async (req, res) => {

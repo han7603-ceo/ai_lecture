@@ -29,7 +29,7 @@ before(async () => {
     env: { ...process.env, PORT: String(PORT), DATA_DIR: dataDir, MASTER_PASSWORD: 'test-pw' },
     stdio: 'ignore',
   });
-  for (let i = 0; i < 50; i++) {
+  for (let i = 0; i < 150; i++) {
     try { await fetch(`${BASE}/api/public/config`); return; } catch { await new Promise((r) => setTimeout(r, 100)); }
   }
   throw new Error('server did not start');
@@ -674,6 +674,90 @@ test('내보내기: ZIP 안 링크모음.xlsx(하이퍼링크·제출 현황), �
   assert.ok((await pz.file('ppt/slides/slide3.xml').async('string')).includes('안낸학생'));
   assert.equal((await call('GET', `/api/master/courses/${course.id}/pptx?t=${token}&a=nope`)).status, 404);
   assert.equal((await call('GET', `/api/master/courses/${course.id}/pptx`)).status, 401);
+});
+
+test('메시지: 공지·개인 메시지·학생 문의, 읽음 표시, 과목·학생 범위, 삭제', async () => {
+  const { data: { token } } = await call('POST', '/api/master/login', { body: { password: 'test-pw' } });
+  const { data: { course } } = await call('POST', '/api/master/courses', { token, body: { name: '메시지반', maxStudents: 4 } });
+  const other = (await call('POST', '/api/master/courses', { token, body: { name: '다른반2', maxStudents: 4 } })).data.course;
+  const s1 = (await call('POST', '/api/join', { body: { code: course.code, name: '일번', pin: '1234' } })).data;
+  const s2 = (await call('POST', '/api/join', { body: { code: course.code, name: '이번', pin: '1234' } })).data;
+  const x = (await call('POST', '/api/join', { body: { code: other.code, name: '남의반', pin: '1234' } })).data;
+  const me = async (st) => (await call('GET', '/api/student/me', { student: st.token })).data.messages;
+
+  assert.equal((await call('POST', `/api/master/courses/${course.id}/messages`, { token, body: { text: ' ' } })).status, 400);
+  assert.equal((await call('POST', `/api/master/courses/${course.id}/messages`, { student: s1.token, body: { text: 'x' } })).status, 401, '학생은 공지 못 보냄');
+  const notice = (await call('POST', `/api/master/courses/${course.id}/messages`, { token, body: { text: '오늘 18시까지 제출' } })).data.messages[0];
+  assert.equal(notice.kind, 'notice');
+  const dm = (await call('POST', `/api/master/courses/${course.id}/messages`, { token, body: { text: '일번 학생만 보세요', studentIds: [s1.studentId, x.studentId] } })).data.messages;
+  assert.equal(dm.length, 1, '다른 과목 학생은 빠짐');
+
+  let m1 = await me(s1);
+  assert.deepEqual(m1.map((m) => [m.kind, m.text, m.read]), [['notice', '오늘 18시까지 제출', false], ['dm', '일번 학생만 보세요', false]]);
+  assert.deepEqual((await me(s2)).map((m) => m.text), ['오늘 18시까지 제출'], '개인 메시지는 그 학생만');
+  assert.equal((await me(x)).length, 0, '다른 과목 공지는 안 보임');
+
+  // 학생 읽음 → 교사 화면에 읽음 수
+  await call('POST', '/api/student/messages/read', { student: s1.token, body: { ids: m1.map((m) => m.id) } });
+  m1 = await me(s1);
+  assert.ok(m1.every((m) => m.read));
+  const tm = (await call('GET', '/api/master/state', { token })).data.messages;
+  assert.equal(tm.find((m) => m.id === notice.id).reads, 1);
+  assert.ok(tm.find((m) => m.id === dm[0].id).readAt);
+
+  // 학생 문의 → 교사가 읽음 → 학생에게 '읽음'
+  assert.equal((await call('POST', '/api/student/messages', { student: s2.token, body: { text: '' } })).status, 400);
+  const q = (await call('POST', '/api/student/messages', { student: s2.token, body: { text: '제출이 안 돼요' } })).data.message;
+  assert.deepEqual([q.from, q.kind, q.read], ['student', 'question', false]);
+  assert.equal((await call('GET', '/api/master/state', { token })).data.messages.find((m) => m.id === q.id).readAt, null);
+  await call('POST', `/api/master/students/${s2.studentId}/messages/read`, { token });
+  assert.equal((await me(s2)).find((m) => m.id === q.id).read, true);
+  // 학생은 다른 학생 메시지를 읽음 처리 못 함
+  await call('POST', '/api/student/messages/read', { student: s2.token, body: { ids: [dm[0].id] } });
+
+  // 교사가 메시지 삭제
+  await call('DELETE', `/api/master/messages/${notice.id}`, { token });
+  assert.ok(!(await me(s2)).some((m) => m.id === notice.id));
+  // 학생 삭제 시 그 학생 대화도 삭제
+  await call('DELETE', `/api/master/students/${s2.studentId}`, { token });
+  assert.ok(!(await call('GET', '/api/master/state', { token })).data.messages.some((m) => m.id === q.id));
+});
+
+test('HTML 제출: 토큰 없는 서명 주소로 격리(sandbox) 실행, 위장 파일은 확장자대로, 서명 위조·만료 거부', async () => {
+  const { data: { token } } = await call('POST', '/api/master/login', { body: { password: 'test-pw' } });
+  const { data: { course } } = await call('POST', '/api/master/courses', { token, body: { name: 'HTML반', maxStudents: 3 } });
+  const st = (await call('POST', '/api/join', { body: { code: course.code, name: '웹학생', pin: '1234' } })).data.token;
+  const form = new FormData();
+  form.append('files', new Blob(['<script>alert(localStorage.lb_master)</script><h1>게임</h1>'], { type: 'text/html' }), 'game.html');
+  form.append('files', new Blob(['<script>alert(1)</script>'], { type: 'text/html' }), '위장.txt');
+  const up = await call('POST', '/api/student/upload', { student: st, body: form });
+  assert.equal(up.status, 200);
+  const [html, txt] = up.data.student.files;
+  assert.equal(html.ext, 'html');
+
+  const r = await fetch(`${BASE}/files/${html.id}?t=${token}`, { redirect: 'manual' });
+  assert.equal(r.status, 302);
+  const loc = r.headers.get('location');
+  assert.match(loc, /^\/view\/f\//);
+  assert.ok(!loc.includes(token), '서명 주소에 교사 토큰이 없음');
+  assert.equal(r.headers.get('referrer-policy'), 'no-referrer');
+  const v = await fetch(BASE + loc);
+  assert.equal(v.status, 200);
+  assert.match(v.headers.get('content-type'), /^text\/html/);
+  assert.match(v.headers.get('content-security-policy'), /^sandbox allow-scripts/);
+  assert.ok(!/allow-same-origin/.test(v.headers.get('content-security-policy')));
+  assert.ok((await v.text()).includes('<h1>게임</h1>'));
+  assert.equal((await fetch(BASE + loc.replace(/s=[^&]+/, 's=AAAA'))).status, 403, '서명 위조');
+  assert.equal((await fetch(BASE + loc.replace(/e=\d+/, `e=${Date.now() - 1000}`))).status, 403, '만료');
+  assert.equal((await fetch(`${BASE}/view/f/${txt.id}?e=1&s=x`)).status, 403);
+  assert.equal((await fetch(`${BASE}/files/${html.id}?t=wrong`, { redirect: 'manual' })).status, 404, '권한 없으면 서명 주소도 안 줌');
+
+  const t = await fetch(`${BASE}/files/${txt.id}?t=${token}`);
+  assert.match(t.headers.get('content-type'), /^text\/plain/, '브라우저가 보낸 text/html 이 아니라 확장자대로');
+  assert.equal(t.headers.get('x-content-type-options'), 'nosniff');
+  const d = await fetch(`${BASE}/files/${html.id}?t=${token}&download=1`, { redirect: 'manual' });
+  assert.equal(d.status, 200);
+  assert.match(d.headers.get('content-disposition'), /attachment/);
 });
 
 test('공용 PC 모드: 과목 설정이 입장 확인·입장·개인 링크 응답에 전달됨', async () => {
