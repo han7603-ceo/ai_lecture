@@ -684,15 +684,29 @@ app.post('/api/student/upload', requireStudent, (req, res) => {
 // 링크 제출: 파일 대신 주소만 저장 (ext 'link' 로 두면 화면에서 🔗 아이콘으로 표시됨)
 app.post('/api/student/links', requireStudent, (req, res) => {
   if (req.course.open === false) return res.status(403).json({ error: '제출이 마감되었습니다.' });
-  const url = normalizeUrl(req.body?.url);
-  if (!url) return res.status(400).json({ error: '올바른 인터넷 주소가 아닙니다. (예: https://docs.google.com/…)' });
+  // 여러 개를 한 번에: { links: [{ url, title }] } (예전 방식 { url, title } 도 받음)
+  const raw = Array.isArray(req.body?.links) ? req.body.links : [{ url: req.body?.url, title: req.body?.title }];
+  if (!raw.length) return res.status(400).json({ error: '제출할 링크를 넣어 주세요.' });
+  if (raw.length > MAX_FILES_PER_UPLOAD) return res.status(400).json({ error: `한 번에 ${MAX_FILES_PER_UPLOAD}개까지 제출할 수 있습니다.` });
+  const items = [];
+  for (const [i, l] of raw.entries()) {
+    const url = normalizeUrl(l?.url);
+    if (!url) {
+      const which = raw.length > 1 ? `${i + 1}번째 링크가 ` : '';
+      return res.status(400).json({ error: `${which}올바른 인터넷 주소가 아닙니다. (예: https://docs.google.com/…)` });
+    }
+    if (!items.some((x) => x.url === url)) items.push({ url, title: l?.title });
+  }
   const pick = pickAssignment(req, res, req.body?.assignmentId);
   if (!pick) return;
   const s = req.student;
-  s.files.push({
-    id: newId(), kind: 'link', url, name: linkTitle(url, req.body?.title), ext: 'link', size: 0,
-    mime: '', stored: null, uploadedAt: Date.now(), assignmentId: pick.a?.id || null, late: pick.late,
-  });
+  const now = Date.now();
+  for (const { url, title } of items) {
+    s.files.push({
+      id: newId(), kind: 'link', url, name: linkTitle(url, title), ext: 'link', size: 0,
+      mime: '', stored: null, uploadedAt: now, assignmentId: pick.a?.id || null, late: pick.late,
+    });
+  }
   saveState();
   pushStudent(s);
   res.json({ student: publicStudent(s) });

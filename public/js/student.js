@@ -186,26 +186,76 @@ function renderHeader() {
   $('#dropzone').classList.toggle('disabled', stop);
   $('#uploadBtn').disabled = stop || uploading;
   $('#linkBtn').disabled = stop;
+  $('#linkAdd').disabled = stop;
 }
 
-// ------------------------------------------------------------ 링크 제출 (미리보기 단계 없이 바로 제출)
+// ------------------------------------------------------------ 링크 제출 (미리보기 단계 없이 바로 제출, 여러 개는 「＋ 추가」로 모아서)
+let pendingLinks = []; // { url, title }
+const URL_IN_TEXT = /(?:https?:\/\/|www\.)[^\s<>"']+/gi;
+function addLink(url, title = '', quiet = false) {
+  url = url.trim();
+  if (!url) return false;
+  if (pendingLinks.some((l) => l.url === url)) { if (!quiet) toast('이미 목록에 있는 링크입니다.'); return false; }
+  pendingLinks.push({ url, title: title.trim() });
+  return true;
+}
+function renderLinkPending() {
+  $('#linkPending').replaceChildren(...pendingLinks.map((l, i) => h('div', { class: 'lp-item' },
+    h('span', {}, '🔗'),
+    h('span', { class: 'lp-text', title: l.url }, l.title ? h('span', { class: 'lp-title' }, l.title) : null, l.url),
+    h('button', { class: 'icon-btn', type: 'button', title: '목록에서 빼기', onclick: () => { pendingLinks.splice(i, 1); renderLinkPending(); } }, '✕'))));
+  const n = pendingLinks.length + ($('#linkUrl').value.trim() ? 1 : 0);
+  $('#linkBtn').textContent = n > 1 ? `링크 ${n}개 제출` : '링크 제출';
+}
+// 입력칸의 링크를 목록으로 (여러 줄·여러 주소를 붙여넣었으면 모두)
+function takeInput() {
+  const text = $('#linkUrl').value.trim();
+  if (!text) return 0;
+  const found = text.match(URL_IN_TEXT);
+  const urls = found && found.length > 1 ? found : [text];
+  let n = 0;
+  for (const u of urls) if (addLink(u, urls.length === 1 ? $('#linkTitle').value : '', urls.length > 1)) n++;
+  $('#linkUrl').value = '';
+  $('#linkTitle').value = '';
+  return n;
+}
+$('#linkAdd').addEventListener('click', () => {
+  if (!$('#linkUrl').value.trim()) return $('#linkUrl').focus();
+  takeInput();
+  renderLinkPending();
+  $('#linkUrl').focus();
+});
+$('#linkUrl').addEventListener('input', renderLinkPending);
+// 주소 여러 개를 한꺼번에 붙여넣으면 바로 목록으로
+$('#linkUrl').addEventListener('paste', (e) => {
+  const text = e.clipboardData?.getData('text') || '';
+  const found = text.match(URL_IN_TEXT) || [];
+  if (found.length < 2) return;
+  e.preventDefault();
+  let n = 0;
+  for (const u of found) if (addLink(u, '', true)) n++;
+  renderLinkPending();
+  toast(`링크 ${n}개를 목록에 넣었습니다. 「링크 제출」을 누르면 한 번에 제출됩니다.`, 'ok', 3500);
+});
 $('#linkForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   if (!me.course.open) return toast('제출이 마감되었습니다.', 'error');
   if (pickedAssignment() && assignmentState(pickedAssignment()) === 'closed') return toast('마감된 과제입니다. 다른 과제를 고르세요.', 'error');
-  const url = $('#linkUrl').value.trim();
-  if (!url) return $('#linkUrl').focus();
+  takeInput();
+  renderLinkPending();
+  if (!pendingLinks.length) return $('#linkUrl').focus();
   $('#linkBtn').disabled = true;
   try {
-    const r = await api('/api/student/links', { method: 'POST', body: { url, title: $('#linkTitle').value, assignmentId: pickId || null }, headers: authHeaders() });
+    const r = await api('/api/student/links', { method: 'POST', body: { links: pendingLinks, assignmentId: pickId || null }, headers: authHeaders() });
+    const n = pendingLinks.length;
     me.student = r.student;
-    $('#linkUrl').value = '';
-    $('#linkTitle').value = '';
+    pendingLinks = [];
+    renderLinkPending();
     renderDone();
     renderAssignments();
-    toast(`${pickedAssignment() ? `'${pickedAssignment().title}' 과제에 ` : ''}링크를 제출했습니다! ✅`, 'ok');
+    toast(`${pickedAssignment() ? `'${pickedAssignment().title}' 과제에 ` : ''}링크 ${n > 1 ? `${n}개를 ` : '를 '}제출했습니다! ✅`, 'ok');
   } catch (err) {
-    toast(err.message, 'error', 4000);
+    toast(err.message, 'error', 4000); // 실패하면 목록은 그대로 두고 고쳐서 다시 제출
   } finally {
     renderHeader();
   }

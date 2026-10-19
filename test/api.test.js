@@ -604,6 +604,26 @@ test('제출물 비우기: 과목 전체·과제별, 학생 등록·PIN·전용 
   assert.equal((await call('POST', `/api/master/assignments/nope/clear-submissions`, { token })).status, 404);
 });
 
+test('학생 링크 여러 개 한 번에 제출: 모두 같은 과제로, 하나라도 잘못되면 전부 거부, 중복 제거', async () => {
+  const { data: { token } } = await call('POST', '/api/master/login', { body: { password: 'test-pw' } });
+  const { data: { course } } = await call('POST', '/api/master/courses', { token, body: { name: '링크반', maxStudents: 3 } });
+  const a = (await call('POST', `/api/master/courses/${course.id}/assignments`, { token, body: { title: '조사' } })).data.assignment;
+  const st = (await call('POST', '/api/join', { body: { code: course.code, name: '링크학생', pin: '1234' } })).data.token;
+  const bad = await call('POST', '/api/student/links', { student: st, body: { links: [{ url: 'https://a.com/1' }, { url: 'nope' }], assignmentId: a.id } });
+  assert.equal(bad.status, 400);
+  assert.match(bad.data.error, /2번째/);
+  assert.equal((await call('GET', '/api/student/me', { student: st })).data.student.files.length, 0, '부분 제출 없음');
+  const ok = await call('POST', '/api/student/links', { student: st, body: {
+    links: [{ url: 'https://a.com/1', title: '첫째' }, { url: 'b.com/2' }, { url: 'https://a.com/1' }], assignmentId: a.id } });
+  assert.equal(ok.status, 200);
+  const files = ok.data.student.files;
+  assert.deepEqual(files.map((f) => f.url), ['https://a.com/1', 'https://b.com/2']);
+  assert.equal(files[0].name, '첫째');
+  assert.ok(files.every((f) => f.assignmentId === a.id));
+  const many = Array.from({ length: 21 }, (_, i) => ({ url: `https://c.com/${i}` }));
+  assert.equal((await call('POST', '/api/student/links', { student: st, body: { links: many } })).status, 400, '한 번에 20개까지');
+});
+
 test('공용 PC 모드: 과목 설정이 입장 확인·입장·개인 링크 응답에 전달됨', async () => {
   const { data: { token } } = await call('POST', '/api/master/login', { body: { password: 'test-pw' } });
   const { data: { course } } = await call('POST', '/api/master/courses', { token, body: { name: 'PC실', maxStudents: 3 } });
