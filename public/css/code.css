@@ -18,3 +18,7 @@
 .code-olds { width: 100%; border-top: 1px dashed var(--line); padding-top: 8px; display: grid; gap: 4px; justify-items: center; }
 .code-old { display: flex; align-items: center; gap: 10px; }
 .code-old-num { font: 700 18px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 3px; color: var(--muted); background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 3px 10px; cursor: pointer; }
+.otp-card { border-color: var(--primary); }
+.otp-big { border-color: var(--primary); color: var(--primary); background: var(--primary-weak); }
+.otp-bar { width: min(100%, 280px); height: 6px; border-radius: 3px; background: var(--panel-2); overflow: hidden; }
+.otp-bar > span { display: block; height: 100%; background: var(--primary); }

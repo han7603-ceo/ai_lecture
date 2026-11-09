@@ -17,6 +17,7 @@ const { pathToFileURL } = require('url');
 const express = require('express');
 const multer = require('multer');
 const { startImapInbox } = require('./inbox-imap');
+const { loadGoogleOtp } = require('./totp');
 const archiver = require('archiver');
 const QRCode = require('qrcode');
 const { buildLinksWorkbook, buildPptx } = require('./export-office');
@@ -952,6 +953,7 @@ app.get('/api/master/state', requireMaster, (req, res) => {
     inboxKey: ensureInboxKey(),
     inboxTtlMin: INBOX_TTL_MIN,
     inboxImap: imapStatus,
+    googleOtp: googleOtpStatus(),
   });
 });
 
@@ -1834,13 +1836,32 @@ app.post('/api/master/mailboxes/all-link/regen', requireMaster, (req, res) => {
   toMasters('mailboxes:all', { codeAllToken: state.codeAllToken });
   res.json({ codeAllToken: state.codeAllToken });
 });
+// Google OTP: 환경 변수 GOOGLE_TOTP_SECRET 이 있으면 코드 확인 페이지에 Google 2단계 인증 코드(30초마다 바뀜)를 보여 줌.
+//   GOOGLE_TOTP_ACCOUNT 를 넣으면 그 주소로 등록한 개인 링크와 통합 링크에만 보임 (없으면 모든 코드 확인 링크)
+const googleOtp = loadGoogleOtp();
+const googleOtpStatus = () => ({ configured: googleOtp.configured, account: googleOtp.account, error: googleOtp.error });
+// 토큰으로 이 링크에서 OTP 를 볼 수 있는지 판단: undefined = 링크 없음, false = 링크는 맞지만 OTP 대상 아님
+function otpAllowed(token) {
+  if (isCodeAllToken(token)) return googleOtp.configured;
+  const b = mailboxByToken(token);
+  if (!b) return undefined;
+  return googleOtp.configured && (!googleOtp.account || b.address === googleOtp.account);
+}
 app.get('/api/code/:token', (req, res) => {
+  const otp = !!otpAllowed(req.params.token);
   if (isCodeAllToken(req.params.token)) {
-    return res.json({ siteTitle: state.siteTitle, all: true, label: '전체 계정', address: `${Object.keys(state.mailboxes).length}개 계정`, ttlMin: INBOX_TTL_MIN, inbox: allMailboxInbox() });
+    return res.json({ siteTitle: state.siteTitle, all: true, label: '전체 계정', address: `${Object.keys(state.mailboxes).length}개 계정`, ttlMin: INBOX_TTL_MIN, inbox: allMailboxInbox(), otp });
   }
   const b = mailboxByToken(req.params.token);
   if (!b) return res.status(404).json({ error: '링크가 올바르지 않거나 다시 만들어졌습니다. 선생님께 새 링크를 받아 주세요.' });
-  res.json({ siteTitle: state.siteTitle, label: b.label, address: b.address, ttlMin: INBOX_TTL_MIN, inbox: mailboxInbox(b) });
+  res.json({ siteTitle: state.siteTitle, label: b.label, address: b.address, ttlMin: INBOX_TTL_MIN, inbox: mailboxInbox(b), otp });
+});
+app.get('/api/code/:token/otp', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const ok = otpAllowed(req.params.token);
+  if (ok === undefined) return res.status(404).json({ error: '링크가 올바르지 않거나 다시 만들어졌습니다. 선생님께 새 링크를 받아 주세요.' });
+  if (!ok) return res.status(404).json({ error: '이 링크에는 Google OTP 가 설정되어 있지 않습니다.' });
+  res.json({ account: googleOtp.account, ...googleOtp.now() });
 });
 app.get('/code/:token', (req, res) => res.sendFile(path.join(__dirname, 'public', 'code.html')));
 
@@ -2134,6 +2155,8 @@ server.listen(PORT, () => {
   console.log(`    교사 대시보드 : http://localhost:${PORT}/master`);
   for (const u of lanUrls()) console.log(`    같은 Wi-Fi 접속: ${u}`);
   if (state.usingDefaultPassword) console.log(`    ⚠ 기본 교사 비밀번호(${DEFAULT_PASSWORD}) 사용 중 — 로그인 후 변경하세요.`);
+  if (googleOtp.configured) console.log(`    Google OTP: 설정됨${googleOtp.account ? ` (${googleOtp.account})` : ''} — 코드 확인 페이지에 표시`);
+  else if (googleOtp.error) console.log(`    Google OTP: ${googleOtp.error}`);
   if (sofficePath) selfTestConvert();
   else console.log('    PDF 변환(LibreOffice): 미설치 — 문서는 브라우저 간이 미리보기로 표시');
   markReady();

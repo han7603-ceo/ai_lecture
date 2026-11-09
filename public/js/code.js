@@ -45,6 +45,47 @@ function fail(msg) {
     h('div', { class: 'code-empty-icon' }, '🔒'), h('p', {}, h('b', {}, msg))));
 }
 
+// Google OTP (2단계 인증 6자리): 서버가 30초마다 바뀌는 코드를 계산해 줌. 바뀔 때만 다시 받아 옴
+let otp = null; // { code, period, remaining, account, at }
+let otpTimer = null;
+function otpLeft() { return otp ? Math.max(0, otp.remaining - Math.floor((Date.now() - otp.at) / 1000)) : 0; }
+function renderOtp() {
+  const box = $('#cOtp');
+  if (!data?.otp) { box.classList.add('hidden'); return; }
+  box.classList.remove('hidden');
+  const left = otpLeft();
+  box.replaceChildren(h('div', { class: 'card code-card otp-card' },
+    h('div', { class: 'code-who' }, '🔐 Google 2단계 인증 코드'),
+    otp?.account && otp.account !== data.address ? h('div', { class: 'code-sub' }, otp.account) : null,
+    otp && left > 0 ? h('button', { class: 'code-big otp-big', title: '눌러서 복사', onclick: () => copy(otp.code) }, otp.code)
+      : h('div', { class: 'code-sub' }, otp?.error || '새 코드를 불러오는 중…'),
+    otp && left > 0 ? h('div', { class: 'otp-bar' }, h('span', { id: 'otpBar' })) : null,
+    otp && left > 0 ? h('div', { class: 'code-sub', id: 'otpLeft' }) : null,
+    h('div', { class: 'code-sub code-tip' }, 'Google 로그인 중 2단계 화면이 나오면 「다른 방법 시도」 → 「Google OTP 앱에서 인증 코드 받기」를 고르고 이 숫자를 입력하세요. 시간이 거의 다 됐으면 새 코드를 기다렸다 입력하세요.')));
+  tickOtp();
+}
+// 1초마다 남은 시간만 고침 (버튼을 다시 만들지 않아 누르는 중에 끊기지 않음)
+function tickOtp() {
+  if (!$('#otpLeft')) return; // 코드가 화면에 있을 때만 (다 된 코드는 renderOtp 가 '불러오는 중'으로 바꿈)
+  const left = otpLeft();
+  if (left <= 0) return renderOtp();
+  $('#otpLeft').textContent = `${left}초 뒤 새 코드로 바뀝니다 · 누르면 복사`;
+  $('#otpBar').style.width = `${(left / otp.period) * 100}%`;
+}
+async function refreshOtp() {
+  clearTimeout(otpTimer);
+  if (!data?.otp) return renderOtp();
+  try {
+    const r = await api(`/api/code/${encodeURIComponent(token)}/otp`);
+    otp = { ...r, at: Date.now() };
+    otpTimer = setTimeout(refreshOtp, r.remaining * 1000 + 300);
+  } catch (e) {
+    otp = { error: e.message, at: Date.now(), remaining: 0, period: 30 };
+    otpTimer = setTimeout(refreshOtp, 10000);
+  }
+  renderOtp();
+}
+
 async function load() {
   try { data = await api(`/api/code/${encodeURIComponent(token)}`); } catch (e) { return fail(e.message); }
   document.title = `인증 코드 · ${data.siteTitle}`;
@@ -52,6 +93,7 @@ async function load() {
   $('#cLabel').textContent = data.all ? '전체 계정 인증 코드' : '인증 코드';
   $('#cAddr').textContent = data.address;
   render();
+  refreshOtp();
 }
 
 await load();
@@ -72,4 +114,7 @@ if (data) {
   });
   socket.on('inbox:remove', ({ ids }) => { data.inbox = data.inbox.filter((m) => !ids.includes(m.id)); render(); });
   setInterval(render, 30000);
+  setInterval(tickOtp, 1000);
+  // 휴대폰 화면이 꺼졌다 켜지면 타이머가 밀리므로 바로 새 코드를 받음
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && data?.otp) refreshOtp(); });
 }

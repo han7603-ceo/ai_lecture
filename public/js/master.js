@@ -1801,6 +1801,11 @@ function renderInbox() {
     ? '연결 방식: Apps Script (또는 아직 연결 전) — 서버가 메일함을 직접 확인하려면 아래 연결 설정의 방법 1을 하세요.'
     : im.ok ? `✅ 연결됨 — ${im.user} 메일함을 30초마다 확인 중 (조건: ${im.query}) · 마지막 확인 ${clock(im.lastCheck)}`
       : im.error ? `⚠️ ${im.user}: ${im.error}` : `⏳ ${im.user} 연결 중…`;
+  const otp = S.googleOtp || {};
+  $('#otpStatus').className = `inbox-status ${otp.configured ? 'ok' : otp.error ? 'err' : 'hidden'}`;
+  $('#otpStatus').textContent = otp.configured
+    ? `🔐 Google OTP 설정됨 — ${otp.account ? `${otp.account} 로 등록한 코드 확인 링크와 통합 링크` : '모든 코드 확인 링크'}에 2단계 인증 코드를 표시합니다.`
+    : `⚠️ Google OTP: ${otp.error || ''}`;
   $('#inboxTtl').textContent = ` · ${S.inboxTtlMin}분 뒤 자동 삭제`;
   $('#inboxTtl2').textContent = `${S.inboxTtlMin}분`;
   $('#inboxKey').textContent = S.inboxKey;
