@@ -11,6 +11,8 @@ const PORT = 3900 + Math.floor(Math.random() * 90);
 const BASE = `http://127.0.0.1:${PORT}`;
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lb-test-'));
 let proc;
+// RFC 6238 시험용 키(ASCII '12345678901234567890')를 Google 화면처럼 소문자·4자씩 띄어 씀
+const OTP_SECRET = 'gezd gnbv gy3t qojq gezd gnbv gy3t qojq';
 
 async function call(method, url, { body, token, student } = {}) {
   const headers = {};
@@ -26,7 +28,7 @@ async function call(method, url, { body, token, student } = {}) {
 
 before(async () => {
   proc = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], {
-    env: { ...process.env, PORT: String(PORT), DATA_DIR: dataDir, MASTER_PASSWORD: 'test-pw' },
+    env: { ...process.env, PORT: String(PORT), DATA_DIR: dataDir, MASTER_PASSWORD: 'test-pw', GOOGLE_TOTP_SECRET: OTP_SECRET, GOOGLE_TOTP_ACCOUNT: 'Flow@Example.com' },
     stdio: 'ignore',
   });
   for (let i = 0; i < 150; i++) {
@@ -775,6 +777,39 @@ test('공용 PC 모드: 과목 설정이 입장 확인·입장·개인 링크 �
 });
 
 // 로그인 차단 테스트는 이 IP 를 15분간 막으므로 항상 마지막에 둔다
+test('Google OTP: 설정한 계정의 코드 확인 링크·통합 링크에만 현재 6자리 코드, 비밀 키는 노출 안 함', async () => {
+  const { totp, base32Decode } = require('../totp');
+  const { data: { token } } = await call('POST', '/api/master/login', { body: { password: 'test-pw' } });
+  const reg = await call('POST', '/api/master/mailboxes', { token, body: { text: 'flow@example.com 공용계정\nother-otp@example.com' } });
+  const flow = reg.data.mailboxes.find((b) => b.address === 'flow@example.com');
+  const other = reg.data.mailboxes.find((b) => b.address === 'other-otp@example.com');
+
+  assert.equal((await call('GET', `/api/code/${flow.token}`)).data.otp, true);
+  assert.equal((await call('GET', `/api/code/${other.token}`)).data.otp, false, '다른 계정 링크에는 OTP 없음');
+
+  const before = Date.now();
+  const r = await call('GET', `/api/code/${flow.token}/otp`);
+  assert.equal(r.status, 200);
+  assert.equal(r.headers.get('cache-control'), 'no-store');
+  assert.equal(r.data.account, 'flow@example.com');
+  assert.match(r.data.code, /^\d{6}$/);
+  assert.equal(r.data.period, 30);
+  assert.ok(r.data.remaining >= 1 && r.data.remaining <= 30);
+  const key = base32Decode(OTP_SECRET);
+  assert.ok([totp(key, before), totp(key, Date.now())].includes(r.data.code), '서버 코드 = 같은 키로 계산한 코드');
+  assert.ok(!JSON.stringify(r.data).toLowerCase().includes('gezd'), '비밀 키는 응답에 없음');
+
+  assert.equal((await call('GET', `/api/code/${other.token}/otp`)).status, 404);
+  assert.equal((await call('GET', '/api/code/nope/otp')).status, 404);
+  const allTok = (await call('GET', '/api/master/state', { token })).data.codeAllToken;
+  assert.equal((await call('GET', `/api/code/${allTok}`)).data.otp, true);
+  assert.equal((await call('GET', `/api/code/${allTok}/otp`)).status, 200);
+
+  const st = (await call('GET', '/api/master/state', { token })).data;
+  assert.deepEqual(st.googleOtp, { configured: true, account: 'flow@example.com', error: null });
+  assert.ok(!JSON.stringify(st).toLowerCase().includes('gezd'), '교사 화면 데이터에도 비밀 키 없음');
+});
+
 test('로그인 실패가 반복되면 차단', async () => {
   let last;
   for (let i = 0; i < 11; i++) last = await call('POST', '/api/master/login', { body: { password: 'wrong' } });
