@@ -87,6 +87,10 @@
           <form class="msg-compose" id="msgForm" autocomplete="off">
             <textarea class="input" id="msgInput" rows="2" maxlength="2000" placeholder="선생님께 문의하기 (예: 과제 제출이 안 돼요)"></textarea>
             <button class="btn primary" id="msgSend" type="submit">보내기</button>
+            <div class="msg-compose-files">
+              <label class="btn sm" title="파일 첨부 (최대 5개) · 화면 캡처는 입력칸에 붙여넣기(Ctrl+V)도 됩니다">📎 파일<input type="file" id="msgFileInput" multiple hidden></label>
+              <div class="msg-chips" id="msgFiles"></div>
+            </div>
           </form>
         </div>
       </section>

@@ -1221,18 +1221,19 @@ const msgUpload = multer({
     cb(null, true);
   },
 });
-// JSON 또는 파일 첨부(multipart) 모두 받음
-function parseMessageBody(req, res, next) {
+// JSON 또는 파일 첨부(multipart) 모두 받음 (교사 10개, 학생 문의 5개)
+const parseMessageBody = (max = 10) => (req, res, next) => {
   if (!req.is('multipart/form-data')) return next();
-  msgUpload.array('files', 10)(req, res, (err) => {
+  msgUpload.array('files', max)(req, res, (err) => {
     if (!err) return next();
     for (const f of req.files || []) fs.rm(f.path, { force: true }, () => {});
     const msg = err.code === 'LIMIT_FILE_SIZE' ? `파일 용량은 ${MAX_FILE_MB}MB 이하만 가능합니다.`
-      : err.code === 'LIMIT_FILE_COUNT' || err.code === 'LIMIT_UNEXPECTED_FILE' ? '파일은 한 번에 10개까지 보낼 수 있습니다.'
+      : err.code === 'LIMIT_FILE_COUNT' || err.code === 'LIMIT_UNEXPECTED_FILE' ? `파일은 한 번에 ${max}개까지 보낼 수 있습니다.`
         : err.message;
     res.status(err.status || 400).json({ error: msg });
   });
-}
+};
+const toAttachments = (files) => files.map((f) => ({ id: f.fileId, name: f.originalname, ext: extOf(f.originalname), size: f.size, stored: path.relative(DATA_DIR, f.path) }));
 
 // 교사 → 공지(전체) 또는 선택한 학생들에게 개인 메시지 (파일 첨부 가능)
 app.post('/api/master/courses/:id/messages', requireMaster, (req, res, next) => {
@@ -1240,7 +1241,7 @@ app.post('/api/master/courses/:id/messages', requireMaster, (req, res, next) => 
   if (!c) return;
   req.course = c;
   next();
-}, parseMessageBody, (req, res) => {
+}, parseMessageBody(10), (req, res) => {
   const c = req.course;
   const files = req.files || [];
   const fail = (status, error) => { for (const f of files) fs.rm(f.path, { force: true }, () => {}); res.status(status).json({ error }); };
@@ -1249,7 +1250,7 @@ app.post('/api/master/courses/:id/messages', requireMaster, (req, res, next) => 
   let ids = req.body?.studentIds;
   if (typeof ids === 'string') { try { ids = JSON.parse(ids); } catch { ids = null; } }
   ids = Array.isArray(ids) && ids.length ? ids : null;
-  const attachments = files.map((f) => ({ id: f.fileId, name: f.originalname, ext: extOf(f.originalname), size: f.size, stored: path.relative(DATA_DIR, f.path) }));
+  const attachments = toAttachments(files);
   const extra = attachments.length ? { attachments } : {};
   if (!ids) return res.json({ messages: [teacherMessage(newMessage({ courseId: c.id, studentId: null, from: 'teacher', kind: 'notice', text, ...extra }))] });
   const targets = ids.map((id) => state.students[id]).filter((st) => st && st.courseId === c.id);
@@ -1320,15 +1321,24 @@ app.delete('/api/master/messages/:id', requireMaster, (req, res) => {
 
 // 학생 → 선생님 문의 (도배 방지: 10분에 20개)
 const questionTimes = new Map(); // studentId -> [시각]
-app.post('/api/student/messages', requireStudent, (req, res) => {
-  const text = msgText(req.body?.text);
-  if (!text) return res.status(400).json({ error: '문의할 내용을 입력해 주세요.' });
+// (파일 첨부 가능: 오류 화면 캡처 등 한 번에 5개)
+app.post('/api/student/messages', requireStudent, (req, res, next) => {
+  // 도배 검사를 먼저 해서 막힌 요청은 파일을 받지도 않음
   const now = Date.now();
   const recent = (questionTimes.get(req.student.id) || []).filter((t) => now - t < 10 * 60000);
   if (recent.length >= 20) return res.status(429).json({ error: '문의를 너무 많이 보냈습니다. 잠시 뒤 다시 보내 주세요.' });
-  recent.push(now);
-  questionTimes.set(req.student.id, recent);
-  const m = newMessage({ courseId: req.course.id, studentId: req.student.id, from: 'student', kind: 'question', text });
+  req.recentQuestions = recent;
+  next();
+}, parseMessageBody(5), (req, res) => {
+  const files = req.files || [];
+  const text = msgText(req.body?.text);
+  if (!text && !files.length) return res.status(400).json({ error: '문의할 내용이나 파일을 넣어 주세요.' });
+  req.recentQuestions.push(Date.now());
+  questionTimes.set(req.student.id, req.recentQuestions);
+  const m = newMessage({
+    courseId: req.course.id, studentId: req.student.id, from: 'student', kind: 'question', text,
+    ...(files.length ? { attachments: toAttachments(files) } : {}),
+  });
   res.json({ message: studentMessage(m, req.student.id) });
 });
 // 학생이 선생님 메시지를 읽음
