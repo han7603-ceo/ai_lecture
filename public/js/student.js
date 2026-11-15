@@ -895,16 +895,51 @@ $('#msgBtn').addEventListener('click', () => {
   $('#msgSection').scrollIntoView({ behavior: 'smooth', block: 'start' });
   setTimeout(() => $('#msgInput').focus(), 300);
 });
+// 문의 첨부 파일 (📎 선택 또는 입력칸에 화면 캡처 붙여넣기)
+let msgFiles = [];
+const MSG_MAX_FILES = 5;
+function renderMsgFiles() {
+  $('#msgFiles').replaceChildren(...msgFiles.map((f, i) => h('span', { class: 'msg-chip' }, iconOf(extOf(f.name)),
+    h('span', { class: 'msg-chip-name', title: f.name }, f.name), h('span', { class: 'muted' }, formatBytes(f.size)),
+    h('button', { type: 'button', title: '빼기', onclick: () => { msgFiles.splice(i, 1); renderMsgFiles(); } }, '✕'))));
+}
+function addMsgFiles(list) {
+  const allowed = new Set(me.allowedExt);
+  for (const f of list) {
+    if (!allowed.has(extOf(f.name))) { toast(`보낼 수 없는 파일 형식입니다: ${f.name}`, 'error'); continue; }
+    if (f.size > me.maxFileMB * 1024 * 1024) { toast(`${me.maxFileMB}MB 초과: ${f.name}`, 'error'); continue; }
+    if (msgFiles.length >= MSG_MAX_FILES) { toast(`파일은 한 번에 ${MSG_MAX_FILES}개까지 보낼 수 있습니다.`, 'error'); break; }
+    msgFiles.push(f);
+  }
+  renderMsgFiles();
+}
+$('#msgFileInput').addEventListener('change', (e) => { addMsgFiles([...e.target.files]); e.target.value = ''; });
+$('#msgInput').addEventListener('paste', (e) => {
+  const imgs = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith('image/'));
+  if (!imgs.length) return;
+  e.preventDefault();
+  const stamp = new Date().toTimeString().slice(0, 8).replace(/:/g, '');
+  addMsgFiles(imgs.map((f, i) => new File([f], `화면캡처_${stamp}${imgs.length > 1 ? `_${i + 1}` : ''}.${(f.type.split('/')[1] || 'png').replace('jpeg', 'jpg')}`, { type: f.type })));
+  toast('화면 캡처를 붙였습니다.', 'ok');
+});
 $('#msgForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const text = $('#msgInput').value.trim();
-  if (!text) return $('#msgInput').focus();
+  if (!text && !msgFiles.length) return $('#msgInput').focus();
+  let body = { text };
+  if (msgFiles.length) {
+    body = new FormData();
+    body.append('text', text);
+    for (const f of msgFiles) body.append('files', f, f.name);
+  }
   $('#msgSend').disabled = true;
   try {
-    const r = await api('/api/student/messages', { method: 'POST', body: { text }, headers: authHeaders() });
+    const r = await api('/api/student/messages', { method: 'POST', body, headers: authHeaders() });
     me.messages ||= [];
     if (!me.messages.some((x) => x.id === r.message.id)) me.messages.push(r.message);
     $('#msgInput').value = '';
+    msgFiles = [];
+    renderMsgFiles();
     renderMessages();
     toast('선생님께 문의를 보냈습니다.', 'ok');
   } catch (err) { toast(err.message, 'error', 4000); } finally { $('#msgSend').disabled = false; }

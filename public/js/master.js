@@ -187,7 +187,7 @@ function connectSocket() {
       const st = students.get(m.studentId);
       const viewing = !$('#msgModal').classList.contains('hidden') && mgTarget === m.studentId;
       if (viewing) markThreadRead(m.studentId);
-      else if (st?.courseId === courseId) toast(`💬 ${st.seat}번 ${st.name}: ${m.text.slice(0, 40)}`, 'ok', 6000);
+      else if (st?.courseId === courseId) toast(`💬 ${st.seat}번 ${st.name}: ${mgPrev(m).slice(0, 40)}`, 'ok', 6000);
     }
     renderMsgCount();
     if (!$('#msgModal').classList.contains('hidden')) renderMessages();

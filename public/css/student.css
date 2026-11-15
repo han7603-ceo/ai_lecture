@@ -164,6 +164,11 @@ body.shared-pc .leave-btn { background: var(--danger-weak); border-color: var(--
 .msg-tag { font-size: 11px; font-weight: 800; margin-bottom: 2px; }
 .msg-compose { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; margin-top: 10px; align-items: end; }
 .msg-compose textarea { resize: vertical; font: inherit; }
+.msg-compose-files { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.msg-chips { display: contents; }
+.msg-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 4px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2); font-size: 12px; }
+.msg-chip .msg-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 160px; }
+.msg-chip button { background: none; border: 0; cursor: pointer; color: var(--muted); padding: 0 2px; font-size: 14px; }
 .msg-pop { width: min(460px, 100%); padding: 20px; }
 .msg-pop .msg-pop-item { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--panel-2); border-radius: 12px; padding: 10px 12px; margin: 8px 0; max-height: 50vh; overflow: auto; }
 .msg-pop .msg-pop-item.notice { background: var(--warn-weak); }

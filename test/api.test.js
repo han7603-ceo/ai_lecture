@@ -725,7 +725,7 @@ test('메시지: 공지·개인 메시지·학생 문의, 읽음 표시, 과목�
   assert.ok(!(await call('GET', '/api/master/state', { token })).data.messages.some((m) => m.id === q.id));
 });
 
-test('메시지 파일 첨부: 공지·개인 메시지에 파일, 받는 학생만 열기, HTML 격리, 삭제하면 파일도 삭제', async () => {
+test('메시지 파일 첨부: 공지·개인 메시지·학생 문의에 파일, 받는 사람만 열기, HTML 격리, 삭제하면 파일도 삭제', async () => {
   const { data: { token } } = await call('POST', '/api/master/login', { body: { password: 'test-pw' } });
   const { data: { course } } = await call('POST', '/api/master/courses', { token, body: { name: '첨부반', maxStudents: 4 } });
   const other = (await call('POST', '/api/master/courses', { token, body: { name: '첨부다른반', maxStudents: 4 } })).data.course;
@@ -802,6 +802,26 @@ test('메시지 파일 첨부: 공지·개인 메시지에 파일, 받는 학생
   assert.equal((await fetch(url(dm2, dm2.attachments[0], s2.token))).status, 200, '함께 받은 다른 학생은 그대로');
   assert.equal(count(), 3);
   await call('DELETE', `/api/master/messages/${dm2.id}`, { token });
+  await new Promise((res) => setTimeout(res, 100));
+  assert.equal(count(), 1, '공지 파일만 남음');
+  // 학생 문의에도 파일 (글 없이 캡처만, 5개 제한) → 교사·본인만 열기
+  const qf = new FormData();
+  qf.append('files', new Blob([Buffer.from('89504e470d0a1a0a', 'hex')]), '오류화면.png');
+  const q = (await call('POST', '/api/student/messages', { student: s1.token, body: qf })).data.message;
+  assert.deepEqual([q.kind, q.text, q.attachments[0].name], ['question', '', '오류화면.png']);
+  const qa = q.attachments[0];
+  assert.equal((await fetch(url(q, qa, token))).status, 200, '교사');
+  assert.match((await fetch(url(q, qa, s1.token))).headers.get('content-type'), /^image\/png/);
+  assert.equal((await fetch(url(q, qa, s2.token))).status, 404, '다른 학생');
+  assert.equal((await call('GET', '/api/master/state', { token })).data.messages.find((m) => m.id === q.id).attachments.length, 1);
+  const many = new FormData();
+  for (let i = 0; i < 6; i++) many.append('files', new Blob(['x']), `${i}.txt`);
+  assert.equal((await call('POST', '/api/student/messages', { student: s1.token, body: many })).status, 400, '6개는 거부');
+  const bad2 = new FormData();
+  bad2.append('files', new Blob(['MZ']), 'a.exe');
+  assert.equal((await call('POST', '/api/student/messages', { student: s1.token, body: bad2 })).status, 415);
+  // 학생 삭제 시 그 학생 문의 파일도 삭제
+  await call('DELETE', `/api/master/students/${s1.studentId}`, { token });
   await new Promise((res) => setTimeout(res, 100));
   assert.equal(count(), 1, '공지 파일만 남음');
   // 과목 삭제 시 첨부 폴더도 삭제
