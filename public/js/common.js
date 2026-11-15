@@ -25,7 +25,8 @@ export function h(tag, attrs = {}, ...children) {
 
 export async function api(url, { method = 'GET', body, headers = {} } = {}) {
   const opts = { method, headers: { ...headers } };
-  if (body !== undefined) {
+  if (body instanceof FormData) opts.body = body; // 파일 첨부: 브라우저가 경계(boundary) 헤더를 붙임
+  else if (body !== undefined) {
     opts.headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
   }

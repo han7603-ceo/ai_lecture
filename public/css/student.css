@@ -152,6 +152,12 @@ body.shared-pc .leave-btn { background: var(--danger-weak); border-color: var(--
 .msg.teacher { justify-self: start; border-top-left-radius: 4px; }
 .msg.notice { justify-self: stretch; max-width: none; background: var(--warn-weak); border: 1px solid var(--warn); }
 .msg.feedback { background: var(--primary-weak); }
+.msg-atts { display: grid; gap: 6px; margin-top: 8px; white-space: normal; }
+.msg-att { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); color: var(--text); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.msg-att:hover { border-color: var(--primary); }
+.msg-att-ico { flex: none; font-size: 18px; }
+.msg-att-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.msg-att-size { flex: none; color: var(--muted); font-size: 12px; }
 .msg.mine { justify-self: end; background: var(--primary); color: #fff; border-top-right-radius: 4px; }
 .msg.unread { box-shadow: 0 0 0 2px var(--danger); }
 .msg .msg-meta { font-size: 11px; opacity: .75; margin-top: 4px; }
@@ -166,3 +172,4 @@ body.shared-pc .leave-btn { background: var(--danger-weak); border-color: var(--
 @media (max-width: 640px) {
   .modal.msg-pop, .modal.qr-modal { height: auto; max-height: calc(100dvh - 32px); width: calc(100% - 32px); border-radius: var(--radius); }
 }
+#pvModal { z-index: 600; } /* 메시지 알림 창 위에 미리보기 */

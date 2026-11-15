@@ -1304,6 +1304,8 @@ function openMessages(target = null, prefill = '', analysisId = null) {
   $('#mgCourse').textContent = course().name;
   $('#msgModal').classList.remove('hidden');
   $('#mgInput').value = prefill;
+  mgFiles = [];
+  renderMgFiles();
   renderMessages();
   if (mgTarget !== 'notice') markThreadRead(mgTarget);
   setTimeout(() => $('#mgInput').focus(), 50);
@@ -1315,6 +1317,31 @@ function markThreadRead(sid) {
   renderMsgCount();
   api(`/api/master/students/${sid}/messages/read`, { method: 'POST', headers: H() }).catch(() => {});
 }
+// 첨부 파일 (보내기 전 목록 / 보낸 메시지의 파일)
+let mgFiles = [];
+const MG_MAX_FILES = 10;
+function renderMgFiles() {
+  $('#mgFiles').classList.toggle('hidden', !mgFiles.length);
+  $('#mgFiles').replaceChildren(...mgFiles.map((f, i) => h('span', { class: 'mg-chip' }, iconOf(extOf(f.name)),
+    h('span', { class: 'mg-chip-name', title: f.name }, f.name), h('span', { class: 'muted' }, formatBytes(f.size)),
+    h('button', { type: 'button', title: '빼기', onclick: () => { mgFiles.splice(i, 1); renderMgFiles(); } }, '✕'))));
+}
+$('#mgFileInput').addEventListener('change', (e) => {
+  for (const f of e.target.files) {
+    const ext = extOf(f.name);
+    if (!S.allowedExt?.includes(ext)) { toast(`보낼 수 없는 파일 형식입니다: ${f.name}`, 'error'); continue; }
+    if (f.size > S.maxFileMB * 1024 * 1024) { toast(`${S.maxFileMB}MB 를 넘는 파일입니다: ${f.name}`, 'error'); continue; }
+    if (mgFiles.length >= MG_MAX_FILES) { toast(`파일은 한 번에 ${MG_MAX_FILES}개까지 보낼 수 있습니다.`, 'error'); break; }
+    mgFiles.push(f);
+  }
+  e.target.value = '';
+  renderMgFiles();
+});
+const mgAttUrl = (m, a, dl) => `/msgfiles/${m.id}/${a.id}?t=${encodeURIComponent(token)}${dl ? '&download=1' : ''}`;
+const mgAtts = (m) => (m.attachments?.length ? h('div', { class: 'mg-atts' }, ...m.attachments.map((a) => h('a', {
+  class: 'mg-chip', href: mgAttUrl(m, a), target: '_blank', rel: 'noopener', title: `${a.name} 열기` },
+iconOf(a.ext), h('span', { class: 'mg-chip-name' }, a.name), h('span', { style: 'opacity:.75' }, formatBytes(a.size))))) : null);
+const mgPrev = (m) => (m ? m.text || `📎 ${m.attachments?.[0]?.name || '파일'}` : '');
 function renderMessages() {
   const list = courseMessages();
   const lastOf = (sid) => list.filter((m) => m.studentId === sid).at(-1);
@@ -1325,8 +1352,8 @@ function renderMessages() {
     mgTarget = key; mgAnalysisId = null; renderMessages(); if (key !== 'notice') markThreadRead(key); $('#mgInput').focus();
   } }, icon, h('span', { class: 'mg-name' }, name), unread ? h('span', { class: 'badge danger' }, unread) : h('span'), h('span', { class: 'mg-prev' }, prev || ''));
   $('#mgSide').replaceChildren(
-    item('notice', '📢', '전체 공지', notices.at(-1)?.text, 0),
-    ...studentsNow.map((st) => item(st.id, h('span', { class: 'seat-no' }, st.seat), st.name, lastOf(st.id)?.text, unreadQuestions(st.id).length)));
+    item('notice', '📢', '전체 공지', mgPrev(notices.at(-1)), 0),
+    ...studentsNow.map((st) => item(st.id, h('span', { class: 'seat-no' }, st.seat), st.name, mgPrev(lastOf(st.id)), unreadQuestions(st.id).length)));
 
   const total = courseStudents().length;
   const del = (m) => h('button', { type: 'button', class: 'mg-del', onclick: async () => {
@@ -1336,7 +1363,7 @@ function renderMessages() {
   let thread;
   if (mgTarget === 'notice') {
     $('#mgHead').textContent = `📢 전체 공지 — 이 과목 학생 ${total}명 모두에게 보입니다 (나중에 입장한 학생 포함)`;
-    thread = notices.map((m) => h('div', { class: 'mg-msg notice' }, m.text, h('div', { class: 'mg-meta' }, mgTime(m.at), `읽음 ${Math.min(m.reads || 0, total)}/${total}`, del(m))));
+    thread = notices.map((m) => h('div', { class: 'mg-msg notice' }, m.text, mgAtts(m), h('div', { class: 'mg-meta' }, mgTime(m.at), `읽음 ${Math.min(m.reads || 0, total)}/${total}`, del(m))));
     $('#mgInput').placeholder = '전체 학생에게 보낼 공지 (예: 오늘 과제는 18시까지 링크로 제출하세요)';
     $('#mgSend').textContent = '📢 공지 보내기';
   } else {
@@ -1344,13 +1371,13 @@ function renderMessages() {
     $('#mgHead').textContent = `${st.seat}번 ${st.name} ${st.online ? '· 🟢 접속 중' : `· 마지막 접속 ${timeAgo(st.lastSeen)}`}`;
     thread = list.filter((m) => m.studentId === st.id).map((m) => {
       const fromT = m.from === 'teacher';
-      return h('div', { class: `mg-msg ${fromT ? `teacher ${m.kind}` : `student ${m.readAt ? '' : 'unread'}`}` }, m.text,
+      return h('div', { class: `mg-msg ${fromT ? `teacher ${m.kind}` : `student ${m.readAt ? '' : 'unread'}`}` }, m.text, mgAtts(m),
         h('div', { class: 'mg-meta' }, mgTime(m.at), fromT ? (m.readAt ? '읽음' : '안 읽음') : '', fromT ? del(m) : null));
     });
     $('#mgInput').placeholder = mgAnalysisId ? 'AI 피드백 초안입니다. 고친 뒤 보내세요.' : `${st.name} 학생에게 보낼 메시지`;
     $('#mgSend').textContent = mgAnalysisId ? '📨 피드백 보내기' : '보내기';
   }
-  $('#mgHint').textContent = 'Ctrl+Enter 로 보내기 · 학생 화면에 알림 창으로 뜹니다';
+  $('#mgHint').textContent = 'Ctrl+Enter 로 보내기 · 학생 화면에 알림 창으로 뜹니다 · 파일은 미리보기·다운로드 가능';
   const box = $('#mgThread');
   box.replaceChildren(...(thread.length ? thread : [h('p', { class: 'muted center' }, mgTarget === 'notice' ? '보낸 공지가 없습니다.' : '아직 주고받은 메시지가 없습니다.')]));
   box.scrollTop = box.scrollHeight;
@@ -1358,17 +1385,29 @@ function renderMessages() {
 $('#mgForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const text = $('#mgInput').value.trim();
-  if (!text) return $('#mgInput').focus();
-  const body = mgTarget === 'notice' ? { text } : { text, studentIds: [mgTarget], analysisId: mgAnalysisId || undefined };
+  if (!text && !mgFiles.length) return $('#mgInput').focus();
+  let body = mgTarget === 'notice' ? { text } : { text, studentIds: [mgTarget], analysisId: mgAnalysisId || undefined };
+  if (mgFiles.length) {
+    const fd = new FormData();
+    fd.append('text', text);
+    if (body.studentIds) fd.append('studentIds', JSON.stringify(body.studentIds));
+    if (body.analysisId) fd.append('analysisId', body.analysisId);
+    for (const f of mgFiles) fd.append('files', f, f.name);
+    body = fd;
+  }
   $('#mgSend').disabled = true;
+  const label = $('#mgSend').textContent;
+  if (mgFiles.length) $('#mgSend').textContent = '올리는 중…';
   try {
     const r = await api(`/api/master/courses/${courseId}/messages`, { method: 'POST', body, headers: H() });
     for (const m of r.messages) if (!S.messages.some((x) => x.id === m.id)) S.messages.push(m);
     $('#mgInput').value = '';
+    mgFiles = [];
+    renderMgFiles();
     if (mgAnalysisId) toast('피드백을 학생에게 보냈습니다.', 'ok');
     mgAnalysisId = null;
     renderMessages();
-  } catch (err) { toast(err.message, 'error'); } finally { $('#mgSend').disabled = false; }
+  } catch (err) { toast(err.message, 'error'); $('#mgSend').textContent = label; } finally { $('#mgSend').disabled = false; }
 });
 $('#mgInput').addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) $('#mgForm').requestSubmit(); });
 

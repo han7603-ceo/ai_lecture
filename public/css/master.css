@@ -349,5 +349,12 @@ body.guest .editable small { display: none; }
 .mg-compose { border-top: 1px solid var(--line); padding: 10px 14px; display: grid; gap: 6px; }
 .mg-compose textarea { resize: vertical; font: inherit; }
 .mg-send { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.mg-send .mg-hint { flex: 1; }
+.mg-files { display: flex; flex-wrap: wrap; gap: 6px; }
+.mg-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 4px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2); font-size: 12px; color: var(--text); text-decoration: none; }
+.mg-chip .mg-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
+.mg-chip button { background: none; border: 0; cursor: pointer; color: var(--muted); padding: 0 2px; font-size: 14px; }
+.mg-atts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; white-space: normal; }
+.mg-msg.teacher .mg-chip { background: rgba(255,255,255,.18); border-color: rgba(255,255,255,.35); color: #fff; }
 .an-sent { color: var(--ok); font-weight: 700; }
 @media (max-width: 720px) { .mg-body { grid-template-columns: 1fr; grid-template-rows: 150px minmax(0, 1fr); } .mg-side { border-right: 0; border-bottom: 1px solid var(--line); } }

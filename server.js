@@ -33,6 +33,7 @@ const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
 const MATERIAL_DIR = path.join(DATA_DIR, 'materials'); // 교사가 학생에게 보낸 자료
 const ANALYSIS_DIR = path.join(DATA_DIR, 'analysis'); // 과제 URL 분석 화면 캡처
+const MSG_DIR = path.join(DATA_DIR, 'messages'); // 메시지 첨부 파일
 const MAX_FILE_MB = Number(process.env.MAX_FILE_MB) || 300;
 // 제출현황.csv 의 시각 표기 (서버가 UTC 로 돌아도 한국 시간으로)
 const TIME_ZONE = process.env.TZ_DISPLAY || 'Asia/Seoul';
@@ -807,6 +808,7 @@ app.get('/view/:kind/:id', (req, res) => {
   let base = UPLOAD_DIR;
   if (kind === 'f') rec = findFile(id)?.f;
   else if (kind === 'm') { rec = state.materials[id]; base = DATA_DIR; }
+  else if (kind === 'a') { const [mid, aid] = id.split('.'); rec = state.messages[mid]?.attachments?.find((x) => x.id === aid); base = DATA_DIR; }
   if (!rec?.stored || !isHtml(rec.ext)) return res.status(404).send('파일을 찾을 수 없습니다.');
   sendSafe(res, path.join(base, rec.stored), rec.ext);
 });
@@ -946,6 +948,7 @@ app.get('/api/master/state', requireMaster, (req, res) => {
     canConvert,
     usingDefaultPassword: !!state.usingDefaultPassword,
     maxFileMB: MAX_FILE_MB,
+    allowedExt: [...ALLOWED_EXT],
     inbox: inbox.map(publicInbox),
     guests: Object.values(state.guests).map(publicGuest),
     mailboxes: Object.values(state.mailboxes).map(publicMailbox),
@@ -1055,7 +1058,7 @@ app.post('/api/master/courses/:id/end', requireMaster, (req, res) => {
 
 async function removeStudent(s) {
   for (const f of s.files) dropAnalysis(f.id);
-  for (const m of Object.values(state.messages)) if (m.studentId === s.id) delete state.messages[m.id];
+  dropMessages((m) => m.studentId === s.id);
   delete state.students[s.id];
   await fsp.rm(path.join(UPLOAD_DIR, s.courseId, s.id), { recursive: true, force: true });
   toStudent(s.id, 'kicked', {});
@@ -1109,7 +1112,8 @@ app.delete('/api/master/courses/:id', requireMaster, async (req, res) => {
   await fsp.rm(path.join(UPLOAD_DIR, c.id), { recursive: true, force: true });
   for (const m of materialsOfCourse(c.id)) delete state.materials[m.id];
   for (const a of assignmentsOf(c.id)) delete state.assignments[a.id];
-  for (const m of Object.values(state.messages)) if (m.courseId === c.id) delete state.messages[m.id];
+  dropMessages((m) => m.courseId === c.id);
+  await fsp.rm(path.join(MSG_DIR, c.id), { recursive: true, force: true });
   await fsp.rm(path.join(MATERIAL_DIR, c.id), { recursive: true, force: true });
   delete state.courses[c.id];
   for (const g of Object.values(state.guests)) if (g.courseId === c.id) dropGuest(g.id);
@@ -1156,15 +1160,19 @@ app.delete('/api/master/students/:id/files/:fileId', requireMaster, async (req, 
 // 메시지: 공지(과목 전체) · 학생 개인 메시지 · 학생 문의 (교사 ↔ 학생 1:1, 참관자에게는 안 보임)
 // ---------------------------------------------------------------------------
 // { id, courseId, studentId(null=공지), from: 'teacher'|'student', kind: 'notice'|'dm'|'feedback'|'question',
-//   text, at, readAt(받는 쪽이 읽은 시각), reads(공지: 학생별 읽은 시각), analysisId? }
+//   text, at, readAt(받는 쪽이 읽은 시각), reads(공지: 학생별 읽은 시각), analysisId?,
+//   attachments?: [{ id, name, ext, size, stored(DATA_DIR 기준) }] — 여러 학생에게 보내면 같은 파일을 함께 가리킴 }
 const MSG_MAX = 2000;
+const publicAttachments = (m) => (m.attachments || []).map(({ id, name, ext, size }) => ({ id, name, ext, size }));
 const teacherMessage = (m) => ({
   id: m.id, courseId: m.courseId, studentId: m.studentId, from: m.from, kind: m.kind, text: m.text, at: m.at,
   readAt: m.readAt || null, reads: m.studentId ? undefined : Object.keys(m.reads || {}).length,
+  attachments: publicAttachments(m),
 });
 const studentMessage = (m, sid) => ({
   id: m.id, from: m.from, kind: m.kind, text: m.text, at: m.at,
   read: m.studentId ? !!m.readAt : !!m.reads?.[sid], // 교사 메시지를 내가 읽었는지 / 내 문의를 교사가 읽었는지
+  attachments: publicAttachments(m),
 });
 const messagesForStudent = (st) => Object.values(state.messages)
   .filter((m) => m.courseId === st.courseId && (m.studentId === st.id || (!m.studentId && m.at >= (st.joinedAt || 0) - 7 * 86400000)))
@@ -1182,24 +1190,108 @@ function newMessage(fields) {
   deliverMessage(m);
   return m;
 }
+// 메시지 삭제 + 더 이상 어떤 메시지도 가리키지 않는 첨부 파일 삭제
+function dropMessages(match) {
+  const gone = [];
+  for (const m of Object.values(state.messages)) if (match(m)) { delete state.messages[m.id]; gone.push(m); }
+  const used = new Set(Object.values(state.messages).flatMap((m) => (m.attachments || []).map((x) => x.stored)));
+  for (const m of gone) for (const x of m.attachments || []) if (!used.has(x.stored)) fs.rm(path.join(DATA_DIR, x.stored), { force: true }, () => {});
+  return gone;
+}
 const msgText = (t) => cleanMultiline(t, MSG_MAX);
 
-// 교사 → 공지(전체) 또는 선택한 학생들에게 개인 메시지
-app.post('/api/master/courses/:id/messages', requireMaster, (req, res) => {
+const msgUpload = multer({
+  storage: multer.diskStorage({
+    destination(req, file, cb) {
+      const dir = path.join(MSG_DIR, req.course.id);
+      fs.mkdir(dir, { recursive: true }, (err) => cb(err, dir));
+    },
+    filename(req, file, cb) {
+      const original = Buffer.from(file.originalname, 'latin1').toString('utf8');
+      file.originalname = original.normalize('NFC');
+      file.fileId = newId();
+      const ext = extOf(original);
+      cb(null, `${file.fileId}${ext ? '.' + ext : ''}`);
+    },
+  }),
+  limits: { fileSize: MAX_FILE_MB * 1024 * 1024, files: 10 },
+  fileFilter(req, file, cb) {
+    const ext = extOf(Buffer.from(file.originalname, 'latin1').toString('utf8'));
+    if (!ALLOWED_EXT.has(ext)) return cb(Object.assign(new Error(`지원하지 않는 파일 형식입니다: .${ext || '?'}`), { status: 415 }));
+    cb(null, true);
+  },
+});
+// JSON 또는 파일 첨부(multipart) 모두 받음
+function parseMessageBody(req, res, next) {
+  if (!req.is('multipart/form-data')) return next();
+  msgUpload.array('files', 10)(req, res, (err) => {
+    if (!err) return next();
+    for (const f of req.files || []) fs.rm(f.path, { force: true }, () => {});
+    const msg = err.code === 'LIMIT_FILE_SIZE' ? `파일 용량은 ${MAX_FILE_MB}MB 이하만 가능합니다.`
+      : err.code === 'LIMIT_FILE_COUNT' || err.code === 'LIMIT_UNEXPECTED_FILE' ? '파일은 한 번에 10개까지 보낼 수 있습니다.'
+        : err.message;
+    res.status(err.status || 400).json({ error: msg });
+  });
+}
+
+// 교사 → 공지(전체) 또는 선택한 학생들에게 개인 메시지 (파일 첨부 가능)
+app.post('/api/master/courses/:id/messages', requireMaster, (req, res, next) => {
   const c = getCourse(req, res);
   if (!c) return;
+  req.course = c;
+  next();
+}, parseMessageBody, (req, res) => {
+  const c = req.course;
+  const files = req.files || [];
+  const fail = (status, error) => { for (const f of files) fs.rm(f.path, { force: true }, () => {}); res.status(status).json({ error }); };
   const text = msgText(req.body?.text);
-  if (!text) return res.status(400).json({ error: '보낼 내용을 입력해 주세요.' });
-  const ids = Array.isArray(req.body?.studentIds) ? req.body.studentIds : null;
-  if (!ids) return res.json({ messages: [teacherMessage(newMessage({ courseId: c.id, studentId: null, from: 'teacher', kind: 'notice', text }))] });
+  if (!text && !files.length) return fail(400, '보낼 내용이나 파일을 넣어 주세요.');
+  let ids = req.body?.studentIds;
+  if (typeof ids === 'string') { try { ids = JSON.parse(ids); } catch { ids = null; } }
+  ids = Array.isArray(ids) && ids.length ? ids : null;
+  const attachments = files.map((f) => ({ id: f.fileId, name: f.originalname, ext: extOf(f.originalname), size: f.size, stored: path.relative(DATA_DIR, f.path) }));
+  const extra = attachments.length ? { attachments } : {};
+  if (!ids) return res.json({ messages: [teacherMessage(newMessage({ courseId: c.id, studentId: null, from: 'teacher', kind: 'notice', text, ...extra }))] });
   const targets = ids.map((id) => state.students[id]).filter((st) => st && st.courseId === c.id);
-  if (!targets.length) return res.status(400).json({ error: '받을 학생을 골라 주세요.' });
+  if (!targets.length) return fail(400, '받을 학생을 골라 주세요.');
   const analysis = req.body?.analysisId && Object.values(state.analyses).find((x) => x.id === req.body.analysisId);
   const out = targets.map((st) => newMessage({
-    courseId: c.id, studentId: st.id, from: 'teacher', kind: analysis ? 'feedback' : 'dm', text, analysisId: analysis?.id || undefined,
+    courseId: c.id, studentId: st.id, from: 'teacher', kind: analysis ? 'feedback' : 'dm', text, analysisId: analysis?.id || undefined, ...extra,
   }));
   if (analysis) { analysis.sentAt = Date.now(); saveState(); pushAnalysis(analysis); }
   res.json({ messages: out.map(teacherMessage) });
+});
+// 첨부 파일 열기: 교사, 또는 받은 학생(공지는 그 과목 학생). HTML 은 격리 보기 주소로
+app.get('/msgfiles/:msgId/:attId', (req, res) => {
+  const m = state.messages[req.params.msgId];
+  const att = m?.attachments?.find((x) => x.id === req.params.attId);
+  const t = String(req.query.t || '');
+  let ok = false;
+  if (att && masterTokens.has(t)) ok = true;
+  else if (att) {
+    const s = t && Object.values(state.students).find((x) => x.token === t);
+    ok = !!s && s.courseId === m.courseId && (m.studentId ? m.studentId === s.id : true);
+  }
+  if (!ok) return res.status(404).send('파일을 찾을 수 없습니다.');
+  const abs = path.join(DATA_DIR, att.stored);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  if (req.query.download) return res.download(abs, att.name);
+  if (isHtml(att.ext)) return res.redirect(302, viewUrl('a', `${m.id}.${att.id}`));
+  sendSafe(res, abs, att.ext);
+});
+app.get('/msgfiles/:msgId/:attId/pdf', async (req, res) => {
+  const m = state.messages[req.params.msgId];
+  const att = m?.attachments?.find((x) => x.id === req.params.attId);
+  const t = String(req.query.t || '');
+  const s = !masterTokens.has(t) && t && Object.values(state.students).find((x) => x.token === t);
+  const ok = att && (masterTokens.has(t) || (s && s.courseId === m.courseId && (!m.studentId || m.studentId === s.id)));
+  if (!ok) return res.status(404).send('파일을 찾을 수 없습니다.');
+  if (!canConvert || !CONVERTIBLE_EXT.has(att.ext)) return res.status(415).send('PDF 변환을 지원하지 않습니다.');
+  try {
+    res.type('pdf').sendFile(await convertToPdf(path.join(DATA_DIR, att.stored)));
+  } catch {
+    res.status(500).send('PDF 변환에 실패했습니다.');
+  }
 });
 // 교사가 학생 문의를 읽음
 app.post('/api/master/students/:id/messages/read', requireMaster, (req, res) => {
@@ -1218,7 +1310,7 @@ app.post('/api/master/students/:id/messages/read', requireMaster, (req, res) => 
 app.delete('/api/master/messages/:id', requireMaster, (req, res) => {
   const m = state.messages[req.params.id];
   if (!m) return res.status(404).json({ error: '메시지를 찾을 수 없습니다.' });
-  delete state.messages[m.id];
+  dropMessages((x) => x.id === m.id);
   saveState();
   io.to('master').emit('message:remove', { id: m.id });
   if (m.studentId) toStudent(m.studentId, 'message:remove', { id: m.id });

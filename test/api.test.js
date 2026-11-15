@@ -725,6 +725,90 @@ test('메시지: 공지·개인 메시지·학생 문의, 읽음 표시, 과목�
   assert.ok(!(await call('GET', '/api/master/state', { token })).data.messages.some((m) => m.id === q.id));
 });
 
+test('메시지 파일 첨부: 공지·개인 메시지에 파일, 받는 학생만 열기, HTML 격리, 삭제하면 파일도 삭제', async () => {
+  const { data: { token } } = await call('POST', '/api/master/login', { body: { password: 'test-pw' } });
+  const { data: { course } } = await call('POST', '/api/master/courses', { token, body: { name: '첨부반', maxStudents: 4 } });
+  const other = (await call('POST', '/api/master/courses', { token, body: { name: '첨부다른반', maxStudents: 4 } })).data.course;
+  const s1 = (await call('POST', '/api/join', { body: { code: course.code, name: '첨부일', pin: '1234' } })).data;
+  const s2 = (await call('POST', '/api/join', { body: { code: course.code, name: '첨부이', pin: '1234' } })).data;
+  const x = (await call('POST', '/api/join', { body: { code: other.code, name: '첨부남', pin: '1234' } })).data;
+  const url = (m, a, t, opt = '') => `${BASE}/msgfiles/${m.id}/${a.id}?t=${encodeURIComponent(t)}${opt}`;
+
+  // 글 없이 파일만 보내는 공지
+  const f1 = new FormData();
+  f1.append('text', '');
+  f1.append('files', new Blob(['공지 첨부 내용']), '안내문.txt');
+  const notice = (await call('POST', `/api/master/courses/${course.id}/messages`, { token, body: f1 })).data.messages[0];
+  assert.equal(notice.kind, 'notice');
+  assert.deepEqual(notice.attachments.map((a) => [a.name, a.ext, a.size]), [['안내문.txt', 'txt', Buffer.byteLength('공지 첨부 내용')]]);
+  assert.equal(notice.attachments[0].stored, undefined, '저장 경로는 숨김');
+
+  // 두 학생에게 개인 메시지 + 파일 2개 (HTML 포함)
+  const f2 = new FormData();
+  f2.append('text', '자료 확인하세요');
+  f2.append('studentIds', JSON.stringify([s1.studentId, s2.studentId, x.studentId]));
+  f2.append('files', new Blob(['%PDF-1.4 test']), '과제 안내.pdf');
+  f2.append('files', new Blob(['<script>alert(localStorage.lb_master)</script><h1>예제</h1>'], { type: 'text/html' }), 'example.html');
+  const dms = (await call('POST', `/api/master/courses/${course.id}/messages`, { token, body: f2 })).data.messages;
+  assert.equal(dms.length, 2, '다른 과목 학생은 빠짐');
+  assert.deepEqual(dms[0].attachments.map((a) => a.name), ['과제 안내.pdf', 'example.html']);
+
+  // 형식·빈 메시지 검사
+  const bad = new FormData();
+  bad.append('files', new Blob(['MZ']), 'virus.exe');
+  assert.equal((await call('POST', `/api/master/courses/${course.id}/messages`, { token, body: bad })).status, 415);
+  assert.equal((await call('POST', `/api/master/courses/${course.id}/messages`, { token, body: new FormData() })).status, 400);
+
+  // 학생 화면: 첨부 목록
+  const m1 = (await call('GET', '/api/student/me', { student: s1.token })).data.messages;
+  const dm1 = m1.find((m) => m.kind === 'dm');
+  assert.equal(dm1.attachments.length, 2);
+  const pdf = dm1.attachments[0];
+  const html = dm1.attachments[1];
+
+  // 열기 권한: 받은 학생·교사만. 다른 학생·다른 과목·토큰 없음은 거부
+  const ok = await fetch(url(dm1, pdf, s1.token));
+  assert.equal(ok.status, 200);
+  assert.match(ok.headers.get('content-type'), /^application\/pdf/);
+  assert.equal(ok.headers.get('x-content-type-options'), 'nosniff');
+  assert.equal((await fetch(url(dm1, pdf, token))).status, 200, '교사');
+  assert.equal((await fetch(url(dm1, pdf, s2.token))).status, 404, '다른 학생에게 온 메시지 파일');
+  assert.equal((await fetch(url(dm1, pdf, ''))).status, 404);
+  const dl = await fetch(url(dm1, pdf, s1.token, '&download=1'));
+  assert.match(dl.headers.get('content-disposition'), /attachment/);
+  // 공지 파일: 같은 과목 학생은 모두, 다른 과목은 안 됨
+  const na = notice.attachments[0];
+  assert.equal(await (await fetch(url(notice, na, s2.token))).text(), '공지 첨부 내용');
+  assert.equal((await fetch(url(notice, na, x.token))).status, 404);
+
+  // HTML 첨부: 토큰 없는 서명 주소로 격리 실행
+  const r = await fetch(url(dm1, html, s1.token), { redirect: 'manual' });
+  assert.equal(r.status, 302);
+  const loc = r.headers.get('location');
+  assert.match(loc, /^\/view\/a\//);
+  assert.ok(!loc.includes(s1.token));
+  const v = await fetch(BASE + loc);
+  assert.match(v.headers.get('content-security-policy'), /^sandbox allow-scripts/);
+  assert.ok(!/allow-same-origin/.test(v.headers.get('content-security-policy')));
+  assert.ok((await v.text()).includes('<h1>예제</h1>'));
+
+  // 한 학생 메시지를 지워도 다른 학생 쪽 파일은 남고, 둘 다 지우면 파일 삭제
+  const dm2 = dms.find((m) => m.studentId === s2.studentId);
+  const stored = path.join(dataDir, 'messages', course.id);
+  const count = () => fs.readdirSync(stored).length;
+  assert.equal(count(), 3);
+  await call('DELETE', `/api/master/messages/${dm1.id}`, { token });
+  assert.equal((await fetch(url(dm1, pdf, s1.token))).status, 404);
+  assert.equal((await fetch(url(dm2, dm2.attachments[0], s2.token))).status, 200, '함께 받은 다른 학생은 그대로');
+  assert.equal(count(), 3);
+  await call('DELETE', `/api/master/messages/${dm2.id}`, { token });
+  await new Promise((res) => setTimeout(res, 100));
+  assert.equal(count(), 1, '공지 파일만 남음');
+  // 과목 삭제 시 첨부 폴더도 삭제
+  await call('DELETE', `/api/master/courses/${course.id}`, { token });
+  assert.ok(!fs.existsSync(stored));
+});
+
 test('HTML 제출: 토큰 없는 서명 주소로 격리(sandbox) 실행, 위장 파일은 확장자대로, 서명 위조·만료 거부', async () => {
   const { data: { token } } = await call('POST', '/api/master/login', { body: { password: 'test-pw' } });
   const { data: { course } } = await call('POST', '/api/master/courses', { token, body: { name: 'HTML반', maxStudents: 3 } });
