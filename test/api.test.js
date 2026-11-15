@@ -829,6 +829,102 @@ test('메시지 파일 첨부: 공지·개인 메시지·학생 문의에 파일
   assert.ok(!fs.existsSync(stored));
 });
 
+test('팀 게시판: 교사 배정(한 팀만), 팀원·교사만 글·댓글·파일·할 일, 팀 과제 제출 공유·ZIP 팀 폴더, 정리', async () => {
+  const { data: { token } } = await call('POST', '/api/master/login', { body: { password: 'test-pw' } });
+  const { data: { course } } = await call('POST', '/api/master/courses', { token, body: { name: '공모전반', maxStudents: 6 } });
+  const join = async (name) => (await call('POST', '/api/join', { body: { code: course.code, name, pin: '1234' } })).data;
+  const [a1, a2, b1] = [await join('가팀원1'), await join('가팀원2'), await join('나팀원1')];
+  const T = (t) => call('GET', '/api/student/team', { student: t.token });
+
+  const ta = (await call('POST', `/api/master/courses/${course.id}/teams`, { token, body: { name: '가팀' } })).data.team;
+  const tb = (await call('POST', `/api/master/courses/${course.id}/teams`, { token, body: {} })).data.team;
+  assert.equal(tb.name, '2팀', '이름 없으면 n팀');
+  assert.equal((await call('POST', `/api/master/courses/${course.id}/teams`, { student: a1.token, body: {} })).status, 401);
+  await call('PATCH', `/api/master/teams/${tb.id}`, { token, body: { memberIds: [a1.studentId, b1.studentId] } });
+  // a1 을 가팀으로 옮기면 2팀에서 빠짐
+  const up = await call('PATCH', `/api/master/teams/${ta.id}`, { token, body: { memberIds: [a1.studentId, a2.studentId, 'nope'], contest: { name: '청소년 앱 공모전', url: 'https://example.com/c', dueAt: Date.now() + 86400000 } } });
+  assert.deepEqual(up.data.team.memberIds, [a1.studentId, a2.studentId]);
+  assert.equal(up.data.team.contest.name, '청소년 앱 공모전');
+  assert.equal((await call('PATCH', `/api/master/teams/${ta.id}`, { token, body: { contest: { name: 'x', url: 'javascript:alert(1)' } } })).status, 400);
+  let st = (await call('GET', '/api/master/state', { token })).data.teams;
+  assert.deepEqual(st.find((t) => t.id === tb.id).memberIds, [b1.studentId]);
+
+  // 학생: 내 팀 정보 (/me 와 /team)
+  const me1 = (await call('GET', '/api/student/me', { student: a1.token })).data.team;
+  assert.equal(me1.team.name, '가팀');
+  assert.deepEqual(me1.team.members.map((m) => m.name), ['가팀원1', '가팀원2']);
+
+  // 글 (파일 포함) → 같은 팀만 보임
+  const f = new FormData();
+  f.append('text', '아이디어: 급식 메뉴 앱');
+  f.append('files', new Blob(['기획 초안']), '기획서.txt');
+  const posted = await call('POST', '/api/student/team/posts', { student: a1.token, body: f });
+  assert.equal(posted.status, 200);
+  const post = posted.data.posts[0];
+  assert.deepEqual([post.author.name, post.mine, post.attachments[0].name], ['가팀원1', true, '기획서.txt']);
+  assert.equal((await T(a2)).data.posts[0].mine, false);
+  assert.equal((await T(b1)).data.posts.length, 0, '다른 팀은 안 보임');
+  assert.equal((await call('POST', '/api/student/team/posts', { student: a1.token, body: { text: ' ' } })).status, 400);
+
+  // 첨부 열기: 팀원·교사만
+  const fu = (t) => `${BASE}/teamfiles/${post.id}/${post.attachments[0].id}?t=${encodeURIComponent(t)}`;
+  assert.equal(await (await fetch(fu(a2.token))).text(), '기획 초안');
+  assert.equal((await fetch(fu(token))).status, 200);
+  assert.equal((await fetch(fu(b1.token))).status, 404);
+
+  // 댓글: 팀원·교사, 다른 팀은 404, 남의 댓글은 못 지움
+  const cm = await call('POST', `/api/team/posts/${post.id}/comments`, { student: a2.token, body: { text: '좋아요!' } });
+  assert.equal(cm.data.posts[0].comments[0].author.name, '가팀원2');
+  assert.equal((await call('POST', `/api/team/posts/${post.id}/comments`, { student: b1.token, body: { text: '몰래' } })).status, 404);
+  const tc = await call('POST', `/api/team/posts/${post.id}/comments`, { token, body: { text: '선생님 의견' } });
+  assert.equal(tc.data.posts[0].comments[1].author.name, '선생님');
+  const cid = cm.data.posts[0].comments[0].id;
+  assert.equal((await call('DELETE', `/api/team/posts/${post.id}/comments/${cid}`, { student: a1.token })).status, 403);
+  assert.equal((await call('DELETE', `/api/team/posts/${post.id}`, { student: a2.token })).status, 403, '남의 글');
+  // 교사도 팀 게시판에 글
+  await call('POST', `/api/master/teams/${ta.id}/posts`, { token, body: { text: '마감 일주일 전 중간 점검' } });
+  assert.equal((await T(a1)).data.posts[0].author.type, 'teacher');
+
+  // 할 일: 담당자는 팀원만, 완료 체크
+  const task = (await call('POST', '/api/student/team/tasks', { student: a1.token, body: { title: '화면 설계', assigneeId: b1.studentId, dueAt: Date.now() + 3600e3 } })).data.tasks[0];
+  assert.equal(task.assigneeId, null, '다른 팀 학생은 담당자 불가');
+  const done = await call('PATCH', `/api/team/tasks/${task.id}`, { student: a2.token, body: { done: true, assigneeId: a2.studentId } });
+  assert.deepEqual([done.data.tasks[0].done, done.data.tasks[0].assigneeId], [true, a2.studentId]);
+  assert.equal((await call('PATCH', `/api/team/tasks/${task.id}`, { student: b1.token, body: { done: false } })).status, 404);
+  st = (await call('GET', '/api/master/state', { token })).data.teams.find((t) => t.id === ta.id);
+  assert.deepEqual([st.posts, st.tasks, st.tasksDone], [2, 1, 1]);
+
+  // 팀 과제: 팀원 제출이 서로 보이고 열림, 다른 팀은 못 엶, ZIP 은 팀 폴더
+  const asg = (await call('POST', `/api/master/courses/${course.id}/assignments`, { token, body: { title: '공모전 출품작', team: true } })).data.assignment;
+  assert.equal(asg.team, true);
+  const sub = new FormData();
+  sub.append('files', new Blob(['최종본']), '출품작.txt');
+  const upd = await call('POST', `/api/student/upload?a=${asg.id}`, { student: a1.token, body: sub });
+  assert.equal(upd.status, 200, JSON.stringify(upd.data));
+  const sb = (await T(a2)).data.submissions.find((x) => x.assignmentId === asg.id);
+  assert.deepEqual(sb.files.map((x) => [x.name, x.by.name]), [['출품작.txt', '가팀원1']]);
+  const fid = sb.files[0].id;
+  assert.equal((await fetch(`${BASE}/files/${fid}?t=${a2.token}`)).status, 200, '같은 팀은 열림');
+  assert.equal((await fetch(`${BASE}/files/${fid}?t=${b1.token}`)).status, 404, '다른 팀은 못 엶');
+  const JSZip = require('jszip');
+  const zip = await JSZip.loadAsync((await call('GET', `/api/master/assignments/${asg.id}/zip?t=${token}`)).data);
+  const names = Object.keys(zip.files);
+  assert.ok(names.some((n) => /\/팀_가팀\/.*가팀원1\/출품작\.txt$/.test(n)), names.join('\n'));
+  const csv = await zip.file(names.find((n) => n.endsWith('제출현황.csv'))).async('string');
+  assert.match(csv, /"가팀","제출",.*"가팀원2","미제출"/, '팀원 한 명만 내도 팀 제출');
+
+  // 학생 삭제 → 팀에서 빠짐, 팀 삭제 → 글·할 일·파일 삭제
+  await call('DELETE', `/api/master/students/${a2.studentId}`, { token });
+  assert.deepEqual((await call('GET', '/api/master/state', { token })).data.teams.find((t) => t.id === ta.id).memberIds, [a1.studentId]);
+  const dir = path.join(dataDir, 'teams', course.id, ta.id);
+  assert.ok(fs.existsSync(dir));
+  await call('DELETE', `/api/master/teams/${ta.id}`, { token });
+  assert.equal((await T(a1)).status, 404, '팀이 없으면 404');
+  assert.equal((await call('GET', '/api/student/me', { student: a1.token })).data.team, null);
+  assert.ok(!fs.existsSync(dir));
+  assert.equal((await fetch(fu(token))).status, 404);
+});
+
 test('HTML 제출: 토큰 없는 서명 주소로 격리(sandbox) 실행, 위장 파일은 확장자대로, 서명 위조·만료 거부', async () => {
   const { data: { token } } = await call('POST', '/api/master/login', { body: { password: 'test-pw' } });
   const { data: { course } } = await call('POST', '/api/master/courses', { token, body: { name: 'HTML반', maxStudents: 3 } });

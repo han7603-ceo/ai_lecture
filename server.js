@@ -100,6 +100,9 @@ function loadState() {
     s.assignments ||= {};
     s.analyses ||= {};
     s.messages ||= {};
+    s.teams ||= {};
+    s.posts ||= {};
+    s.tasks ||= {};
     return s;
   } catch {
     return {
@@ -113,6 +116,9 @@ function loadState() {
       assignments: {},
       analyses: {},
       messages: {},
+      teams: {},
+      posts: {},
+      tasks: {},
     };
   }
 }
@@ -251,7 +257,7 @@ function assignmentState(a, now = Date.now()) {
 }
 const publicAssignment = (a) => ({
   id: a.id, courseId: a.courseId, title: a.title, desc: a.desc || '', dueAt: a.dueAt || null,
-  allowLate: !!a.allowLate, closed: !!a.closed, createdAt: a.createdAt, criteria: a.criteria || '',
+  allowLate: !!a.allowLate, closed: !!a.closed, createdAt: a.createdAt, criteria: a.criteria || '', team: !!a.team,
 });
 
 // ---------------------------------------------------------------------------
@@ -618,6 +624,7 @@ app.get('/api/student/me', requireStudent, (req, res) => {
     assignments: assignmentsOf(req.course.id).map(publicAssignment),
     iceServers: ICE_SERVERS,
     messages: messagesForStudent(req.student),
+    team: teamOf(req.student.id) ? teamBundle(teamOf(req.student.id), { type: 'student', id: req.student.id }) : null,
   });
 });
 
@@ -695,6 +702,7 @@ app.post('/api/student/upload', requireStudent, (req, res) => {
     }
     saveState();
     pushStudent(s);
+    touchTeamOf(s);
     res.json({ student: publicStudent(s) });
     // 교사가 열어볼 때 바로 보이도록 문서는 미리 PDF 로 변환 (백그라운드, 순차 처리)
     if (canConvert) {
@@ -742,6 +750,7 @@ app.post('/api/student/links', requireStudent, (req, res) => {
   }
   saveState();
   pushStudent(s);
+  touchTeamOf(s);
   res.json({ student: publicStudent(s), added: fresh.length, skipped });
 });
 
@@ -764,6 +773,7 @@ app.delete('/api/student/files/:fileId', requireStudent, async (req, res) => {
   if (!(await removeFileRecord(req.student, req.params.fileId))) return res.status(404).json({ error: '파일이 없습니다.' });
   saveState();
   pushStudent(req.student);
+  touchTeamOf(req.student);
   res.json({ student: publicStudent(req.student) });
 });
 
@@ -777,8 +787,14 @@ function resolveFileAccess(req) {
   const t = req.query.t || '';
   const g = guestByToken(t);
   const isMaster = masterTokens.has(t) || (g && guestSees(g, owner.courseId));
-  if (!isMaster && owner.token !== t) return null;
-  return { owner, file: owner.files.find((f) => f.id === fileId) };
+  const file = owner.files.find((f) => f.id === fileId);
+  if (!isMaster && owner.token !== t) {
+    // 팀 과제는 같은 팀 학생도 볼 수 있음
+    const me = t && Object.values(state.students).find((x) => x.token === t);
+    const team = me && teamOf(me.id);
+    if (!(team && team.memberIds.includes(owner.id) && state.assignments[file.assignmentId]?.team)) return null;
+  }
+  return { owner, file };
 }
 
 // HTML 은 토큰 없는 짧은 서명 주소(10분)로만 열고, 격리(sandbox)해서 이 사이트의 로그인 정보에 접근 못 하게 함
@@ -808,6 +824,7 @@ app.get('/view/:kind/:id', (req, res) => {
   let base = UPLOAD_DIR;
   if (kind === 'f') rec = findFile(id)?.f;
   else if (kind === 'm') { rec = state.materials[id]; base = DATA_DIR; }
+  else if (kind === 't') { const [pid, aid] = id.split('.'); rec = state.posts[pid]?.attachments?.find((x) => x.id === aid); base = DATA_DIR; }
   else if (kind === 'a') { const [mid, aid] = id.split('.'); rec = state.messages[mid]?.attachments?.find((x) => x.id === aid); base = DATA_DIR; }
   if (!rec?.stored || !isHtml(rec.ext)) return res.status(404).send('파일을 찾을 수 없습니다.');
   sendSafe(res, path.join(base, rec.stored), rec.ext);
@@ -941,6 +958,7 @@ app.get('/api/master/state', requireMaster, (req, res) => {
     iceServers: ICE_SERVERS,
     analyses: Object.values(state.analyses).filter((a) => findFile(a.fileId)).map(publicAnalysis),
     messages: Object.values(state.messages).map(teacherMessage),
+    teams: Object.values(state.teams).map(publicTeam),
     analysisInfo: analysisInfo(),
     publicUrl,
     publicUrlSource,
@@ -1059,6 +1077,8 @@ app.post('/api/master/courses/:id/end', requireMaster, (req, res) => {
 async function removeStudent(s) {
   for (const f of s.files) dropAnalysis(f.id);
   dropMessages((m) => m.studentId === s.id);
+  const team = teamOf(s.id);
+  if (team) { team.memberIds = team.memberIds.filter((id) => id !== s.id); emitTeam(team); }
   delete state.students[s.id];
   await fsp.rm(path.join(UPLOAD_DIR, s.courseId, s.id), { recursive: true, force: true });
   toStudent(s.id, 'kicked', {});
@@ -1074,6 +1094,7 @@ async function clearSubmissions(courseId, match = () => true) {
     const ids = s.files.filter(match).map((f) => f.id);
     for (const id of ids) if (await removeFileRecord(s, id)) removed++;
     if (ids.length) { pushStudent(s); toStudent(s.id, 'student:update', publicStudent(s)); }
+    if (ids.length) touchTeamOf(s);
   }
   saveState();
   return removed;
@@ -1114,6 +1135,8 @@ app.delete('/api/master/courses/:id', requireMaster, async (req, res) => {
   for (const a of assignmentsOf(c.id)) delete state.assignments[a.id];
   dropMessages((m) => m.courseId === c.id);
   await fsp.rm(path.join(MSG_DIR, c.id), { recursive: true, force: true });
+  for (const t of teamsOf(c.id)) await removeTeam(t);
+  await fsp.rm(path.join(TEAM_DIR, c.id), { recursive: true, force: true });
   await fsp.rm(path.join(MATERIAL_DIR, c.id), { recursive: true, force: true });
   delete state.courses[c.id];
   for (const g of Object.values(state.guests)) if (g.courseId === c.id) dropGuest(g.id);
@@ -1359,6 +1382,307 @@ app.post('/api/student/messages/read', requireStudent, (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// 팀 (공모전 팀 게시판): 교사가 팀을 만들고 학생을 배정. 팀원·교사만 보는 글·댓글·파일, 할 일, 팀 과제 제출물
+// ---------------------------------------------------------------------------
+// team: { id, courseId, name, memberIds[], contest: { name, url, dueAt } | null, createdAt }
+// post: { id, courseId, teamId, author: { type: 'teacher'|'student', id }, text, attachments[], at, comments[{ id, author, text, at }] }
+// task: { id, courseId, teamId, title, assigneeId, dueAt, done, doneAt, at }
+const TEAM_DIR = path.join(DATA_DIR, 'teams');
+const teamsOf = (courseId) => Object.values(state.teams).filter((t) => t.courseId === courseId).sort((a, b) => a.createdAt - b.createdAt);
+const teamOf = (studentId) => Object.values(state.teams).find((t) => t.memberIds.includes(studentId)) || null;
+const postsOf = (teamId) => Object.values(state.posts).filter((p) => p.teamId === teamId).sort((a, b) => b.at - a.at);
+const tasksOf = (teamId) => Object.values(state.tasks).filter((x) => x.teamId === teamId).sort((a, b) => a.done - b.done || (a.dueAt || Infinity) - (b.dueAt || Infinity) || a.at - b.at);
+const publicTeam = (t) => ({
+  id: t.id, courseId: t.courseId, name: t.name, memberIds: t.memberIds, contest: t.contest || null, createdAt: t.createdAt,
+  posts: postsOf(t.id).length, tasks: tasksOf(t.id).length, tasksDone: tasksOf(t.id).filter((x) => x.done).length,
+});
+const authorOut = (a) => (a.type === 'teacher' ? { type: 'teacher', name: '선생님' }
+  : { type: 'student', id: a.id, name: state.students[a.id]?.name || '(나간 학생)', seat: state.students[a.id]?.seat || null });
+const isAuthor = (a, viewer) => a.type === viewer.type && (a.type === 'teacher' || a.id === viewer.id);
+// 팀 게시판 한 번에 (교사: viewer = { type: 'teacher' }, 학생: { type: 'student', id })
+function teamBundle(t, viewer) {
+  const members = t.memberIds.map((id) => state.students[id]).filter(Boolean);
+  const teamAssignments = assignmentsOf(t.courseId).filter((a) => a.team);
+  return {
+    team: {
+      id: t.id, name: t.name, contest: t.contest || null,
+      members: members.map((s) => ({ id: s.id, name: s.name, seat: s.seat, online: (online.get(s.id) || 0) > 0 })),
+    },
+    posts: postsOf(t.id).map((p) => ({
+      id: p.id, author: authorOut(p.author), mine: isAuthor(p.author, viewer), text: p.text, at: p.at,
+      attachments: publicAttachments(p),
+      comments: p.comments.map((c) => ({ id: c.id, author: authorOut(c.author), mine: isAuthor(c.author, viewer), text: c.text, at: c.at })),
+    })),
+    tasks: tasksOf(t.id).map(({ id, title, assigneeId, dueAt, done, doneAt, at }) => ({ id, title, assigneeId, dueAt, done, doneAt, at })),
+    submissions: teamAssignments.map((a) => ({
+      assignmentId: a.id, title: a.title, dueAt: a.dueAt || null, state: assignmentState(a),
+      files: members.flatMap((s) => s.files.filter((f) => f.assignmentId === a.id).map((f) => ({
+        ...publicFile(f), by: { id: s.id, name: s.name },
+      }))).sort((x, y) => x.uploadedAt - y.uploadedAt),
+    })),
+  };
+}
+// 바뀌면 팀원·교사 화면이 다시 불러옴
+function emitTeam(t, extraStudentIds = []) {
+  for (const id of new Set([...t.memberIds, ...extraStudentIds])) toStudent(id, 'team:changed', { teamId: t.id });
+  io.to('master').emit('team:update', publicTeam(t));
+}
+const touchTeamOf = (s) => { const t = teamOf(s.id); if (t) emitTeam(t); };
+function dropPosts(match) {
+  for (const p of Object.values(state.posts)) {
+    if (!match(p)) continue;
+    delete state.posts[p.id];
+    for (const x of p.attachments || []) fs.rm(path.join(DATA_DIR, x.stored), { force: true }, () => {});
+  }
+}
+async function removeTeam(t) {
+  delete state.teams[t.id];
+  dropPosts((p) => p.teamId === t.id);
+  for (const x of Object.values(state.tasks)) if (x.teamId === t.id) delete state.tasks[x.id];
+  await fsp.rm(path.join(TEAM_DIR, t.courseId, t.id), { recursive: true, force: true });
+  for (const id of t.memberIds) toStudent(id, 'team:changed', { teamId: t.id });
+  io.to('master').emit('team:remove', { id: t.id, courseId: t.courseId });
+}
+function readContest(body) {
+  if (!body || !cleanText(body.name, 60)) return null;
+  let url = cleanText(body.url, 500);
+  if (url) {
+    try { const u = new URL(url); if (!/^https?:$/.test(u.protocol)) throw new Error(); url = u.href; } catch { throw Object.assign(new Error('공모전 주소가 올바르지 않습니다.'), { status: 400 }); }
+  }
+  const due = body.dueAt == null || body.dueAt === '' ? null : Number(body.dueAt);
+  if (due !== null && !(Number.isFinite(due) && due > 0)) throw Object.assign(new Error('마감 시각이 올바르지 않습니다.'), { status: 400 });
+  return { name: cleanText(body.name, 60), url: url || '', dueAt: due };
+}
+
+// --- 교사: 팀 만들기·고치기·지우기
+app.post('/api/master/courses/:id/teams', requireMaster, (req, res) => {
+  const c = getCourse(req, res);
+  if (!c) return;
+  const name = cleanText(req.body?.name, 30) || `${teamsOf(c.id).length + 1}팀`;
+  const t = { id: newId(), courseId: c.id, name, memberIds: [], contest: null, createdAt: Date.now() };
+  state.teams[t.id] = t;
+  saveState();
+  emitTeam(t);
+  res.json({ team: publicTeam(t) });
+});
+app.patch('/api/master/teams/:id', requireMaster, (req, res) => {
+  const t = state.teams[req.params.id];
+  if (!t) return res.status(404).json({ error: '팀을 찾을 수 없습니다.' });
+  const body = req.body || {};
+  if ('name' in body) {
+    const name = cleanText(body.name, 30);
+    if (!name) return res.status(400).json({ error: '팀 이름을 입력해 주세요.' });
+    t.name = name;
+  }
+  if ('contest' in body) {
+    try { t.contest = readContest(body.contest); } catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
+  }
+  let removed = [];
+  if ('memberIds' in body) {
+    if (!Array.isArray(body.memberIds)) return res.status(400).json({ error: '팀원 목록이 올바르지 않습니다.' });
+    const ids = [...new Set(body.memberIds.map(String))].filter((id) => state.students[id]?.courseId === t.courseId);
+    removed = t.memberIds.filter((id) => !ids.includes(id));
+    // 한 학생은 한 팀에만: 다른 팀에서 빼기
+    for (const other of teamsOf(t.courseId)) {
+      if (other.id === t.id) continue;
+      const left = other.memberIds.filter((id) => !ids.includes(id));
+      if (left.length !== other.memberIds.length) {
+        const moved = other.memberIds.filter((id) => ids.includes(id));
+        other.memberIds = left;
+        emitTeam(other, moved);
+      }
+    }
+    t.memberIds = ids;
+  }
+  saveState();
+  emitTeam(t, removed);
+  res.json({ team: publicTeam(t) });
+});
+app.delete('/api/master/teams/:id', requireMaster, async (req, res) => {
+  const t = state.teams[req.params.id];
+  if (!t) return res.status(404).json({ error: '팀을 찾을 수 없습니다.' });
+  await removeTeam(t);
+  saveState();
+  res.json({ ok: true });
+});
+app.get('/api/master/teams/:id/board', requireMaster, (req, res) => {
+  const t = state.teams[req.params.id];
+  if (!t) return res.status(404).json({ error: '팀을 찾을 수 없습니다.' });
+  res.json(teamBundle(t, { type: 'teacher' }));
+});
+
+// --- 글·댓글·할 일: 교사(어느 팀이든) 또는 그 팀 학생
+// 요청한 사람과 팀을 찾아 req.team / req.viewer 에 넣음
+function teamActor(teamFrom) {
+  return (req, res, next) => {
+    const mt = req.get('x-master-token');
+    const t = teamFrom(req);
+    if (mt && masterTokens.has(mt)) {
+      if (!t) return res.status(404).json({ error: '찾을 수 없습니다.' });
+      req.team = t; req.viewer = { type: 'teacher' };
+      return next();
+    }
+    requireStudent(req, res, () => {
+      if (!t || !t.memberIds.includes(req.student.id)) return res.status(404).json({ error: '찾을 수 없습니다.' });
+      // 도배 방지: 학생은 10분에 글·댓글·할 일 60개
+      const now = Date.now();
+      const recent = (teamActs.get(req.student.id) || []).filter((x) => now - x < 10 * 60000);
+      if (req.method !== 'GET' && recent.length >= 60) return res.status(429).json({ error: '너무 많이 올렸습니다. 잠시 뒤 다시 해 주세요.' });
+      if (req.method !== 'GET') { recent.push(now); teamActs.set(req.student.id, recent); }
+      req.team = t; req.viewer = { type: 'student', id: req.student.id };
+      next();
+    });
+  };
+}
+const teamActs = new Map();
+const byTeamParam = (req) => {
+  if (req.params.teamId) return state.teams[req.params.teamId];
+  const s = Object.values(state.students).find((x) => x.token === getToken(req, 'x-student-token'));
+  return s ? teamOf(s.id) : null;
+};
+const byPost = (req) => state.teams[state.posts[req.params.postId]?.teamId];
+const byTask = (req) => state.teams[state.tasks[req.params.taskId]?.teamId];
+
+const teamUpload = multer({
+  storage: multer.diskStorage({
+    destination(req, file, cb) {
+      const dir = path.join(TEAM_DIR, req.team.courseId, req.team.id);
+      fs.mkdir(dir, { recursive: true }, (err) => cb(err, dir));
+    },
+    filename(req, file, cb) {
+      const original = Buffer.from(file.originalname, 'latin1').toString('utf8');
+      file.originalname = original.normalize('NFC');
+      file.fileId = newId();
+      const ext = extOf(original);
+      cb(null, `${file.fileId}${ext ? '.' + ext : ''}`);
+    },
+  }),
+  limits: { fileSize: MAX_FILE_MB * 1024 * 1024, files: 10 },
+  fileFilter(req, file, cb) {
+    const ext = extOf(Buffer.from(file.originalname, 'latin1').toString('utf8'));
+    if (!ALLOWED_EXT.has(ext)) return cb(Object.assign(new Error(`지원하지 않는 파일 형식입니다: .${ext || '?'}`), { status: 415 }));
+    cb(null, true);
+  },
+});
+function parseTeamBody(req, res, next) {
+  if (!req.is('multipart/form-data')) return next();
+  const max = req.viewer.type === 'teacher' ? 10 : 5;
+  teamUpload.array('files', max)(req, res, (err) => {
+    if (!err) return next();
+    for (const f of req.files || []) fs.rm(f.path, { force: true }, () => {});
+    const msg = err.code === 'LIMIT_FILE_SIZE' ? `파일 용량은 ${MAX_FILE_MB}MB 이하만 가능합니다.`
+      : err.code === 'LIMIT_FILE_COUNT' || err.code === 'LIMIT_UNEXPECTED_FILE' ? `파일은 한 번에 ${max}개까지 올릴 수 있습니다.`
+        : err.message;
+    res.status(err.status || 400).json({ error: msg });
+  });
+}
+const sendBundle = (req, res) => res.json(teamBundle(req.team, req.viewer));
+const authorOf = (req) => (req.viewer.type === 'teacher' ? { type: 'teacher' } : { type: 'student', id: req.viewer.id });
+
+app.get('/api/student/team', teamActor(byTeamParam), sendBundle);
+for (const base of ['/api/master/teams/:teamId', '/api/student/team']) {
+  app.post(`${base}/posts`, teamActor(byTeamParam), parseTeamBody, (req, res) => {
+    const files = req.files || [];
+    const text = cleanMultiline(req.body?.text, 3000);
+    if (!text && !files.length) return res.status(400).json({ error: '내용이나 파일을 넣어 주세요.' });
+    const p = { id: newId(), courseId: req.team.courseId, teamId: req.team.id, author: authorOf(req), text, attachments: toAttachments(files), at: Date.now(), comments: [] };
+    state.posts[p.id] = p;
+    saveState();
+    emitTeam(req.team);
+    sendBundle(req, res);
+  });
+  app.post(`${base}/tasks`, teamActor(byTeamParam), (req, res) => {
+    const title = cleanText(req.body?.title, 100);
+    if (!title) return res.status(400).json({ error: '할 일을 입력해 주세요.' });
+    const x = { id: newId(), courseId: req.team.courseId, teamId: req.team.id, title, assigneeId: null, dueAt: null, done: false, doneAt: null, at: Date.now() };
+    const err = readTask(req.body, x, req.team);
+    if (err) return res.status(400).json({ error: err });
+    state.tasks[x.id] = x;
+    saveState();
+    emitTeam(req.team);
+    sendBundle(req, res);
+  });
+}
+function readTask(body, x, t) {
+  if ('title' in body) { const title = cleanText(body.title, 100); if (!title) return '할 일을 입력해 주세요.'; x.title = title; }
+  if ('assigneeId' in body) x.assigneeId = body.assigneeId && t.memberIds.includes(String(body.assigneeId)) ? String(body.assigneeId) : null;
+  if ('dueAt' in body) {
+    const due = body.dueAt == null || body.dueAt === '' ? null : Number(body.dueAt);
+    if (due !== null && !(Number.isFinite(due) && due > 0)) return '기한이 올바르지 않습니다.';
+    x.dueAt = due;
+  }
+  if ('done' in body) { x.done = !!body.done; x.doneAt = x.done ? Date.now() : null; }
+  return null;
+}
+app.post('/api/team/posts/:postId/comments', teamActor(byPost), (req, res) => {
+  const text = cleanMultiline(req.body?.text, 1000);
+  if (!text) return res.status(400).json({ error: '댓글을 입력해 주세요.' });
+  state.posts[req.params.postId].comments.push({ id: newId(), author: authorOf(req), text, at: Date.now() });
+  saveState();
+  emitTeam(req.team);
+  sendBundle(req, res);
+});
+app.delete('/api/team/posts/:postId', teamActor(byPost), (req, res) => {
+  const p = state.posts[req.params.postId];
+  if (req.viewer.type !== 'teacher' && !isAuthor(p.author, req.viewer)) return res.status(403).json({ error: '내가 쓴 글만 지울 수 있습니다.' });
+  dropPosts((x) => x.id === p.id);
+  saveState();
+  emitTeam(req.team);
+  sendBundle(req, res);
+});
+app.delete('/api/team/posts/:postId/comments/:commentId', teamActor(byPost), (req, res) => {
+  const p = state.posts[req.params.postId];
+  const c = p.comments.find((x) => x.id === req.params.commentId);
+  if (!c) return res.status(404).json({ error: '댓글을 찾을 수 없습니다.' });
+  if (req.viewer.type !== 'teacher' && !isAuthor(c.author, req.viewer)) return res.status(403).json({ error: '내가 쓴 댓글만 지울 수 있습니다.' });
+  p.comments = p.comments.filter((x) => x.id !== c.id);
+  saveState();
+  emitTeam(req.team);
+  sendBundle(req, res);
+});
+app.patch('/api/team/tasks/:taskId', teamActor(byTask), (req, res) => {
+  const x = state.tasks[req.params.taskId];
+  const draft = { ...x };
+  const err = readTask(req.body || {}, draft, req.team);
+  if (err) return res.status(400).json({ error: err });
+  Object.assign(x, draft);
+  saveState();
+  emitTeam(req.team);
+  sendBundle(req, res);
+});
+app.delete('/api/team/tasks/:taskId', teamActor(byTask), (req, res) => {
+  delete state.tasks[req.params.taskId];
+  saveState();
+  emitTeam(req.team);
+  sendBundle(req, res);
+});
+// 팀 글 첨부 파일: 교사 또는 그 팀 학생만. HTML 은 격리 보기 주소로
+function teamFileAccess(req) {
+  const p = state.posts[req.params.postId];
+  const att = p?.attachments?.find((x) => x.id === req.params.attId);
+  const t = String(req.query.t || '');
+  if (!att || !t) return null;
+  if (masterTokens.has(t)) return { p, att };
+  const s = Object.values(state.students).find((x) => x.token === t);
+  return s && state.teams[p.teamId]?.memberIds.includes(s.id) ? { p, att } : null;
+}
+app.get('/teamfiles/:postId/:attId', (req, res) => {
+  const a = teamFileAccess(req);
+  if (!a) return res.status(404).send('파일을 찾을 수 없습니다.');
+  const abs = path.join(DATA_DIR, a.att.stored);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  if (req.query.download) return res.download(abs, a.att.name);
+  if (isHtml(a.att.ext)) return res.redirect(302, viewUrl('t', `${a.p.id}.${a.att.id}`));
+  sendSafe(res, abs, a.att.ext);
+});
+app.get('/teamfiles/:postId/:attId/pdf', async (req, res) => {
+  const a = teamFileAccess(req);
+  if (!a) return res.status(404).send('파일을 찾을 수 없습니다.');
+  if (!canConvert || !CONVERTIBLE_EXT.has(a.att.ext)) return res.status(415).send('PDF 변환을 지원하지 않습니다.');
+  try { res.type('pdf').sendFile(await convertToPdf(path.join(DATA_DIR, a.att.stored))); } catch { res.status(500).send('PDF 변환에 실패했습니다.'); }
+});
+
+// ---------------------------------------------------------------------------
 // 과제 URL 분석 (교사 전용): 학생이 낸 링크를 열어 자동 점검·화면 캡처 → AI 피드백 초안
 // ---------------------------------------------------------------------------
 const ANALYSIS_CONCURRENCY = 2;
@@ -1530,6 +1854,7 @@ function readAssignment(body, a) {
   if ('allowLate' in body) a.allowLate = !!body.allowLate;
   if ('criteria' in body) a.criteria = cleanMultiline(body.criteria, 1500); // AI 분석용 평가 기준 (한 줄에 하나)
   if ('closed' in body) a.closed = !!body.closed;
+  if ('team' in body) a.team = !!body.team; // 팀 과제: 팀원 누가 내도 팀 제출
   return null;
 }
 function pushAssignment(a) {
@@ -2154,17 +2479,24 @@ app.get('/api/master/assignments/:id/zip', requireMaster, (req, res) => {
   sendZip(res, `${root}_${stamp()}.zip`, async (archive) => {
     archive.append(await linksXlsx(c.id, a.id), { name: `${root}/링크모음.xlsx` });
     const students = studentsOf(c.id);
+    // 팀 과제: 과제명/팀_이름/01_홍길동/… (팀 없는 학생은 '팀 없음')
+    const teamName = (s) => teamOf(s.id)?.name || '';
+    const teamDir = (s) => (a.team ? `${safeFsName(teamName(s) ? `팀_${teamName(s)}` : '팀 없음')}/` : '');
     for (const s of students) {
       const files = filesOf(s, a.id);
-      if (files.length) appendStudentFiles(archive, s, `${root}/${studentFolder(s)}/`, files);
+      if (files.length) appendStudentFiles(archive, s, `${root}/${teamDir(s)}${studentFolder(s)}/`, files);
     }
+    const teamStatus = (s) => {
+      const t = teamOf(s.id);
+      return submitStatus(t ? t.memberIds.flatMap((id) => (state.students[id] ? filesOf(state.students[id], a.id) : [])) : filesOf(s, a.id));
+    };
     const rows = students.map((s) => {
       const files = filesOf(s, a.id).sort((x, y) => x.uploadedAt - y.uploadedAt);
-      return csvRow([s.seat, s.name, submitStatus(files), fmtTime(files[0]?.uploadedAt), fmtTime(files.at(-1)?.uploadedAt),
+      return csvRow([...(a.team ? [teamName(s) || '팀 없음', teamStatus(s)] : []), s.seat, s.name, submitStatus(files), fmtTime(files[0]?.uploadedAt), fmtTime(files.at(-1)?.uploadedAt),
         files.length, files.map(fileLabel).join(' | ')]);
     });
-    const head = [csvRow(['과제', a.title]), csvRow(['마감', a.dueAt ? fmtTime(a.dueAt) : '없음']), '',
-      csvRow(['자리', '이름', '상태', '처음 제출', '마지막 제출', '파일 수', '파일 목록'])];
+    const head = [csvRow(['과제', a.title + (a.team ? ' (팀 과제)' : '')]), csvRow(['마감', a.dueAt ? fmtTime(a.dueAt) : '없음']), '',
+      csvRow([...(a.team ? ['팀', '팀 제출'] : []), '자리', '이름', '상태', '처음 제출', '마지막 제출', '파일 수', '파일 목록'])];
     archive.append('\ufeff' + head.concat(rows).join('\r\n'), { name: `${root}/제출현황.csv` });
   });
 });

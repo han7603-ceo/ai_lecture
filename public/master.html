@@ -38,6 +38,7 @@
       <div class="spacer"></div>
       <div class="top-actions">
         <button class="btn primary" id="joinInfoBtn">📱 입장 안내 (QR)</button>
+        <button class="btn master-only" id="teamBtn">👥 팀</button>
         <button class="btn master-only" id="msgBtnT">💬 메시지 <span class="badge danger hidden" id="msgCountT"></span></button>
         <button class="btn master-only" id="materialsBtn">📤 자료 보내기</button>
         <button class="btn master-only" id="inboxBtn">📬 인증 메일 <span class="badge danger hidden" id="inboxCount"></span></button>
@@ -167,6 +168,20 @@
     </div>
   </div>
 
+  <!-- 팀: 공모전 팀 게시판 (교사가 팀 배정) -->
+  <div class="modal-bg hidden" id="teamModal">
+    <div class="modal messages">
+      <div class="modal-head"><strong>👥 팀</strong><span class="muted small" id="tmCourse"></span><div class="spacer"></div><button class="icon-btn" data-close aria-label="닫기">✕</button></div>
+      <div class="mg-body">
+        <aside class="mg-side" id="tmSide"></aside>
+        <section class="mg-main tm-main">
+          <div class="tm-empty muted" id="tmEmpty"></div>
+          <div class="tm-board hidden" id="tmBoard"></div>
+        </section>
+      </div>
+    </div>
+  </div>
+
   <!-- 메시지: 공지 · 학생별 대화 -->
   <div class="modal-bg hidden" id="msgModal">
     <div class="modal messages">
@@ -230,6 +245,7 @@
             </div>
           </div>
           <label class="switch-row"><input type="checkbox" id="amLate"> 마감 뒤에도 받기 (‘지각’으로 표시)</label>
+          <label class="switch-row"><input type="checkbox" id="amTeam"> 👥 팀 과제 (팀원 중 한 명만 내도 팀 제출 · 팀원끼리 제출물 공유 · ZIP 은 팀 폴더로)</label>
           <label class="field"><span>평가 기준 <span class="muted small">(선택 · 🔍 AI 분석에 쓰임 · 한 줄에 하나)</span></span><textarea class="input" id="amCriteria" maxlength="1500" rows="3" placeholder="예) Netlify 로 배포되어 접속된다&#10;Supabase 에서 데이터를 읽고 쓴다&#10;API 키가 화면 쪽 코드에 노출되지 않는다&#10;모바일에서도 화면이 깨지지 않는다"></textarea></label>
           <div class="row-actions">
             <button type="button" class="btn ghost hidden" id="amCancel">편집 취소</button>
