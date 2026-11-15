@@ -3,6 +3,7 @@ import {
   assignmentState, dueText, fmtDue, submitStatus,
 } from './common.js';
 import { renderPreview, thumbFor } from './preview.js';
+import { createTeamBoard } from './teamboard.js';
 
 const CONVERTIBLE = new Set(['doc', 'docx', 'ppt', 'pptx', 'pps', 'ppsx', 'xls', 'xlsx', 'hwp']);
 const store = {
@@ -192,6 +193,17 @@ function connectSocket() {
     renderMsgCount();
     if (!$('#msgModal').classList.contains('hidden')) renderMessages();
   });
+  socket.on('team:update', (t) => {
+    S.teams ||= [];
+    const i = S.teams.findIndex((x) => x.id === t.id);
+    if (i >= 0) S.teams[i] = t; else S.teams.push(t);
+    if (teamOpen()) { renderTeamSide(); if (tmTarget === t.id) loadTeamBoard(); }
+  });
+  socket.on('team:remove', ({ id }) => {
+    S.teams = (S.teams || []).filter((x) => x.id !== id);
+    if (tmTarget === id) tmTarget = null;
+    if (teamOpen()) renderTeamModal();
+  });
   socket.on('message:remove', ({ id }) => {
     S.messages = (S.messages || []).filter((x) => x.id !== id);
     renderMsgCount();
@@ -215,6 +227,7 @@ function connectSocket() {
     const i = S.assignments.findIndex((x) => x.id === a.id);
     if (i >= 0) S.assignments[i] = a; else S.assignments.push(a);
     if (a.courseId === courseId) renderAssignmentsAll();
+    if (teamOpen() && tmTarget) loadTeamBoard();
   });
   socket.on('assignment:remove', ({ id, courseId: cid }) => {
     S.assignments = S.assignments.filter((a) => a.id !== id);
@@ -847,7 +860,7 @@ $('#joinInfoBtn').addEventListener('click', openJoin);
 $('#codeChip').addEventListener('click', openJoin);
 $('#joinClose').addEventListener('click', () => closeModal('#joinModal'));
 function closeModal(sel) { $(sel).classList.add('hidden'); }
-for (const id of ['#joinModal', '#settingsModal', '#materialsModal', '#matPvModal', '#inboxModal', '#assignModal', '#anModal', '#msgModal']) {
+for (const id of ['#joinModal', '#settingsModal', '#materialsModal', '#matPvModal', '#inboxModal', '#assignModal', '#anModal', '#msgModal', '#teamModal']) {
   $(id).addEventListener('click', (e) => { if (e.target.id === id.slice(1) || e.target.closest('[data-close]')) closeModal(id); });
 }
 
@@ -1027,6 +1040,7 @@ function editAssignment(a) {
   $('#amDesc').value = a.desc;
   $('#amDue').value = toLocalInput(a.dueAt);
   $('#amLate').checked = a.allowLate;
+  $('#amTeam').checked = !!a.team;
   $('#amCriteria').value = a.criteria || '';
   $('#amFormTitle').textContent = `과제 편집 — ${a.title}`;
   $('#amSave').textContent = '💾 저장';
@@ -1052,7 +1066,7 @@ $('#amForm').addEventListener('submit', async (e) => {
   const title = $('#amTitle').value.trim();
   if (!title) { toast('과제 이름을 입력해 주세요.', 'error'); return $('#amTitle').focus(); }
   const dueAt = fromLocalInput($('#amDue').value);
-  const body = { title, desc: $('#amDesc').value, dueAt, allowLate: $('#amLate').checked, criteria: $('#amCriteria').value };
+  const body = { title, desc: $('#amDesc').value, dueAt, allowLate: $('#amLate').checked, team: $('#amTeam').checked, criteria: $('#amCriteria').value };
   const editing = editingAssign && assignById(editingAssign);
   // 마감을 미래로 다시 잡으면 '마감하기'로 닫아 둔 과제도 다시 연다
   if (editing && editing.closed && dueAt && dueAt > Date.now()) body.closed = false;
@@ -1120,7 +1134,7 @@ function renderAssignList() {
       h('div', { class: 'am-main' },
         h('div', { class: 'am-title' }, a.title,
           h('span', { class: `am-st ${st}` }, st === 'open' ? '받는 중' : st === 'late' ? '지각 받는 중' : '마감')),
-        h('div', { class: 'am-sub' }, `🕒 ${dueText(a)}${a.allowLate ? ' · 지각 허용' : ''}`),
+        h('div', { class: 'am-sub' }, `${a.team ? '👥 팀 과제 · ' : ''}🕒 ${dueText(a)}${a.allowLate ? ' · 지각 허용' : ''}`),
         a.desc ? h('div', { class: 'am-sub' }, a.desc) : null),
       h('span', { class: 'am-count' }, `제출 ${done}/${studentsNow.length}`, late ? h('span', { class: 'st-late' }, ` (지각 ${late})`) : null),
       h('div', { class: 'am-acts' },
@@ -1410,6 +1424,121 @@ $('#mgForm').addEventListener('submit', async (e) => {
   } catch (err) { toast(err.message, 'error'); $('#mgSend').textContent = label; } finally { $('#mgSend').disabled = false; }
 });
 $('#mgInput').addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) $('#mgForm').requestSubmit(); });
+
+// ------------------------------------------------------------ 팀 (공모전 팀 게시판)
+let tmTarget = null; // 보고 있는 팀 id
+const teamOpen = () => !$('#teamModal').classList.contains('hidden');
+const courseTeams = () => (S.teams || []).filter((t) => t.courseId === courseId).sort((a, b) => a.createdAt - b.createdAt);
+const tmSettings = h('div', { class: 'tm-settings' });
+const board = createTeamBoard($('#tmBoard'), {
+  base: () => `/api/master/teams/${tmTarget}`,
+  headers: () => H(),
+  token: () => token,
+  teacher: true,
+  maxFiles: 10,
+  allowedExt: () => S.allowedExt || [],
+  maxFileMB: () => S.maxFileMB,
+  canConvert: () => S.canConvert,
+  openAtt: (src) => window.open(src.url, '_blank', 'noopener'),
+  openSubmission: (f) => window.open(f.kind === 'link' ? f.url : `/files/${f.id}?t=${encodeURIComponent(token)}`, '_blank', 'noopener'),
+  extraTabs: [{ key: 'settings', label: '⚙️ 팀 설정', el: tmSettings }],
+  onBundle: () => renderTeamSettings(),
+});
+function openTeams() {
+  if (!course()) return;
+  $('#tmCourse').textContent = course().name;
+  if (tmTarget && !courseTeams().some((t) => t.id === tmTarget)) tmTarget = null;
+  tmTarget ||= courseTeams()[0]?.id || null;
+  $('#teamModal').classList.remove('hidden');
+  renderTeamModal();
+}
+$('#teamBtn').addEventListener('click', openTeams);
+function renderTeamModal() {
+  renderTeamSide();
+  const has = !!tmTarget;
+  $('#tmBoard').classList.toggle('hidden', !has);
+  $('#tmEmpty').classList.toggle('hidden', has);
+  if (!has) {
+    $('#tmEmpty').replaceChildren(h('p', {}, '👥 공모전·프로젝트 팀을 만들어 학생을 배정하세요.'),
+      h('p', { class: 'small' }, '팀원과 선생님만 보는 게시판(글·댓글·파일), 할 일 목록, 공모전 D-day, 팀 과제 제출물을 한곳에서 관리합니다.'),
+      h('button', { class: 'btn primary', onclick: newTeam }, '＋ 첫 팀 만들기'));
+    return;
+  }
+  loadTeamBoard();
+}
+function renderTeamSide() {
+  const teams = courseTeams();
+  const inTeam = new Set(teams.flatMap((t) => t.memberIds));
+  const free = courseStudents().filter((s) => !inTeam.has(s.id)).length;
+  $('#tmSide').replaceChildren(
+    h('button', { type: 'button', class: 'mg-item tm-new', onclick: newTeam }, '＋ 새 팀'),
+    ...teams.map((t) => h('button', { type: 'button', class: `mg-item ${tmTarget === t.id ? 'active' : ''}`, onclick: () => { tmTarget = t.id; renderTeamModal(); } },
+      '👥', h('span', { class: 'mg-name' }, t.name), t.tasks ? h('span', { class: 'muted small' }, `✅${t.tasksDone}/${t.tasks}`) : h('span'),
+      h('span', { class: 'mg-prev' }, `${t.memberIds.length}명 · 글 ${t.posts}${t.contest?.dueAt ? ` · 🏆 ${new Date(t.contest.dueAt).toLocaleDateString('ko-KR', { month: 'numeric', day: 'numeric' })} 마감` : ''}`))),
+    free ? h('p', { class: 'muted small', style: 'padding:8px' }, `팀 없는 학생 ${free}명`) : null);
+}
+async function newTeam() {
+  try {
+    const r = await api(`/api/master/courses/${courseId}/teams`, { method: 'POST', body: {}, headers: H() });
+    if (!S.teams.some((x) => x.id === r.team.id)) S.teams.push(r.team);
+    tmTarget = r.team.id;
+    renderTeamModal();
+    board.setTab('settings');
+  } catch (e) { toast(e.message, 'error'); }
+}
+let tmSeq = 0;
+async function loadTeamBoard() {
+  const id = tmTarget;
+  const seq = ++tmSeq;
+  try {
+    const b = await api(`/api/master/teams/${id}/board`, { headers: H() });
+    if (seq === tmSeq && id === tmTarget) board.render(b);
+  } catch (e) { if (e.status !== 404) toast(e.message, 'error'); }
+}
+// 팀 설정: 이름·공모전·팀원 (다른 팀 학생을 고르면 이 팀으로 옮김)
+function renderTeamSettings() {
+  const t = (S.teams || []).find((x) => x.id === tmTarget);
+  if (!t) return;
+  if (tmSettings.dataset.team === t.id && tmSettings.contains(document.activeElement)) return; // 입력 중이면 그대로
+  tmSettings.dataset.team = t.id;
+  const others = new Map(courseTeams().filter((x) => x.id !== t.id).flatMap((x) => x.memberIds.map((id) => [id, x.name])));
+  const name = h('input', { class: 'input', maxlength: 30, value: t.name });
+  const cName = h('input', { class: 'input', maxlength: 60, placeholder: '공모전 이름 (선택)', value: t.contest?.name || '' });
+  const cUrl = h('input', { class: 'input', maxlength: 500, placeholder: '공고 주소 https://…', value: t.contest?.url || '' });
+  const cDue = h('input', { class: 'input', type: 'datetime-local', title: '공모전 마감', value: t.contest?.dueAt ? toLocalInput(t.contest.dueAt) : '' });
+  const checks = courseStudents().map((s) => {
+    const on = t.memberIds.includes(s.id);
+    const cb = h('input', { type: 'checkbox', value: s.id, checked: on, onchange: (e) => e.target.closest('label').classList.toggle('on', e.target.checked) });
+    return h('label', { class: on ? 'on' : '' }, cb, `${s.seat}번 ${s.name}`, others.has(s.id) ? h('span', { class: 'other' }, `(${others.get(s.id)})`) : null);
+  });
+  tmSettings.replaceChildren(
+    h('label', { class: 'field' }, h('span', {}, '팀 이름'), name),
+    h('div', { class: 'field' }, h('span', { class: 'field-label' }, '🏆 공모전 (팀 화면에 D-day 로 표시)'), h('div', { class: 'tm-contest' }, cName, cUrl, cDue)),
+    h('div', { class: 'field' }, h('span', { class: 'field-label' }, `팀원 (${t.memberIds.length}명) — 다른 팀 학생을 고르면 이 팀으로 옮겨집니다`),
+      checks.length ? h('div', { class: 'tm-members' }, ...checks) : h('p', { class: 'muted small' }, '아직 입장한 학생이 없습니다.')),
+    h('div', { class: 'row-actions', style: 'display:flex;gap:8px;justify-content:space-between' },
+      h('button', { type: 'button', class: 'btn danger', onclick: async () => {
+        if (!(await confirmDialog(`'${t.name}' 팀을 지울까요?\n팀 게시판 글·파일·할 일이 모두 지워집니다. (학생과 제출물은 그대로)`, { ok: '팀 삭제', danger: true }))) return;
+        try { await api(`/api/master/teams/${t.id}`, { method: 'DELETE', headers: H() }); } catch (e) { toast(e.message, 'error'); }
+      } }, '팀 삭제'),
+      h('button', { type: 'button', class: 'btn primary', onclick: async () => {
+        const body = {
+          name: name.value,
+          memberIds: checks.map((l) => l.querySelector('input')).filter((x) => x.checked).map((x) => x.value),
+          contest: cName.value.trim() ? { name: cName.value, url: cUrl.value, dueAt: fromLocalInput(cDue.value) } : null,
+        };
+        try {
+          const r = await api(`/api/master/teams/${t.id}`, { method: 'PATCH', body, headers: H() });
+          const i = S.teams.findIndex((x) => x.id === t.id);
+          if (i >= 0) S.teams[i] = r.team;
+          document.activeElement?.blur();
+          tmSettings.dataset.team = '';
+          renderTeamSide();
+          loadTeamBoard();
+          toast('팀 설정을 저장했습니다.', 'ok');
+        } catch (e) { toast(e.message, 'error'); }
+      } }, '💾 저장')));
+}
 
 // ------------------------------------------------------------ PPT (과제별 보기면 그 과제만)
 $('#pptBtn').addEventListener('click', () => {

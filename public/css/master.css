@@ -328,6 +328,16 @@ body.guest .editable small { display: none; }
 /* 메시지 */
 #msgBtnT .badge { margin-left: 2px; }
 .modal.messages { width: min(1000px, 100%); height: calc(100dvh - 32px); display: flex; flex-direction: column; }
+.tm-main { overflow: auto; padding: 12px 16px; }
+.tm-empty { padding: 24px; text-align: center; line-height: 1.7; }
+.tm-new { justify-content: center; font-weight: 700; color: var(--primary); }
+.tm-settings { display: grid; gap: 12px; max-width: 640px; }
+.tm-members { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; }
+.tm-members label { display: flex; gap: 6px; align-items: center; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; cursor: pointer; }
+.tm-members label.on { border-color: var(--primary); background: var(--primary-weak); }
+.tm-members .other { color: var(--muted); font-size: 11px; }
+.tm-contest { display: grid; grid-template-columns: 1fr 1fr 200px; gap: 6px; }
+@media (max-width: 720px) { .tm-contest { grid-template-columns: 1fr; } }
 .mg-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 260px minmax(0, 1fr); }
 .mg-side { border-right: 1px solid var(--line); overflow: auto; padding: 8px; display: grid; gap: 4px; align-content: start; }
 .mg-item { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 2px 8px; align-items: center; padding: 8px; border-radius: 10px; cursor: pointer; border: 1px solid transparent; text-align: left; background: none; font: inherit; color: inherit; }

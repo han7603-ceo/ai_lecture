@@ -3,6 +3,7 @@ import {
   assignmentState, dueText, fmtDue, submitStatus,
 } from './common.js';
 import { renderPreview } from './preview.js';
+import { createTeamBoard } from './teamboard.js';
 
 const params = new URLSearchParams(location.search);
 let code = (params.get('code') || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -154,6 +155,7 @@ function enterMain() {
   renderMessages();
   if (unreadTeacher().length) popMessages(unreadTeacher()); // 입장했을 때 안 읽은 메시지가 있으면 바로 보여 줌
   renderMaterials();
+  renderTeam();
   renderAssignments();
   renderHeader();
   renderDone();
@@ -289,7 +291,7 @@ function connectSocket() {
     if (shareStream) socket.emit('screen:state', { sharing: true }); // 끊겼다 이어져도 공유 상태 유지
     // 다시 연결되면 끊긴 동안 바뀐 과제·자료를 새로 받음
     if (connectedOnce) {
-      try { me = await api('/api/student/me', { headers: authHeaders() }); renderHeader(); renderMessages(); renderMaterials(); renderAssignments(); renderHeader(); renderDone(); } catch { /* connect_error 에서 처리 */ }
+      try { me = await api('/api/student/me', { headers: authHeaders() }); renderHeader(); renderMessages(); renderMaterials(); renderTeam(); renderAssignments(); renderHeader(); renderDone(); } catch { /* connect_error 에서 처리 */ }
     }
     connectedOnce = true;
   });
@@ -314,7 +316,9 @@ function connectSocket() {
       toast(`📝 새 과제: ${a.title}`, 'ok', 4000);
     }
     renderAssignments(); renderHeader(); renderDone();
+    if (a.team || me.team) refreshTeam();
   });
+  socket.on('team:changed', () => refreshTeam());
   socket.on('assignment:remove', ({ id }) => {
     me.assignments = me.assignments.filter((a) => a.id !== id);
     if (pickId === id) pickId = undefined;
@@ -553,7 +557,9 @@ function renderAssignments() {
   let todo = 0;
   for (const a of list) {
     const st = assignmentState(a);
-    const files = myFilesFor(a.id);
+    // 팀 과제: 팀원 누가 내도 팀 제출
+    const teamSub = a.team && me.team?.submissions.find((x) => x.assignmentId === a.id);
+    const files = teamSub ? teamSub.files : myFilesFor(a.id);
     const my = submitStatus(files);
     if (my === '미제출' && st !== 'closed') todo++;
     const soon = st === 'open' && a.dueAt && a.dueAt - Date.now() < 24 * 3600e3;
@@ -561,7 +567,8 @@ function renderAssignments() {
     box.append(h('div', { class: `assign-card st-${st} ${pickId === a.id ? 'picked' : ''}` },
       h('div', { class: 'ac-main' },
         h('div', { class: 'ac-title' }, h('b', {}, a.title),
-          h('span', { class: `ac-my my-${my}` }, my === '미제출' ? '미제출' : `${my === '지각' ? '⏰ 지각' : '✔ 제출'} ${files.length}개`)),
+          a.team ? h('span', { class: 'ac-team' }, '👥 팀 과제') : null,
+          h('span', { class: `ac-my my-${my}` }, my === '미제출' ? '미제출' : `${my === '지각' ? '⏰ 지각' : teamSub ? '✔ 팀 제출' : '✔ 제출'} ${files.length}개`)),
         a.desc ? h('div', { class: 'ac-desc' }, a.desc) : null,
         h('div', { class: `ac-due ${soon ? 'soon' : ''}` }, `🕒 ${dueText(a)}`)),
       canSubmit ? h('button', { class: `btn sm ${files.length ? '' : 'primary'}`, onclick: () => choose(a.id) }, files.length ? '더 내기' : '제출하기') : null));
@@ -620,6 +627,64 @@ function closePreview() {
 $('#pvClose').addEventListener('click', closePreview);
 $('#pvModal').addEventListener('click', (e) => { if (e.target.id === 'pvModal') closePreview(); });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closePreview(); });
+
+// ------------------------------------------------------------ 우리 팀 (공모전 팀 게시판)
+let seenPosts = null; // 새 글 알림용
+const teamBoard = createTeamBoard($('#teamBoard'), {
+  base: () => '/api/student/team',
+  headers: () => authHeaders(),
+  token: () => token,
+  maxFiles: 5,
+  allowedExt: () => me.allowedExt,
+  maxFileMB: () => me.maxFileMB,
+  canConvert: () => me.canConvert,
+  openAtt: (src) => openPreview(src),
+  openSubmission: (f) => {
+    if (f.kind === 'link') return window.open(f.url, '_blank', 'noopener');
+    const url = `/files/${f.id}?t=${encodeURIComponent(token)}`;
+    openPreview({ name: f.name, ext: f.ext, size: f.size, url, download: `${url}&download=1`,
+      pdfUrl: me.canConvert && CONVERTIBLE.has(f.ext) ? `/files/${f.id}/pdf?t=${encodeURIComponent(token)}` : null });
+  },
+  onBundle: (b) => {
+    // 다른 팀원·선생님이 새 글을 올리면 알림
+    const ids = new Set(b.posts.map((p) => p.id));
+    if (seenPosts) {
+      const fresh = b.posts.filter((p) => !seenPosts.has(p.id) && !p.mine);
+      if (fresh.length) {
+        toast(`👥 팀 게시판: ${fresh[0].author.name}님이 새 글을 올렸습니다.`, 'ok', 4000);
+        if (!teamOpen) { $('#teamNew').textContent = 'NEW'; $('#teamNew').classList.remove('hidden'); }
+      }
+    }
+    seenPosts = ids;
+  },
+});
+let teamOpen = true;
+function renderTeam() {
+  $('#teamSection').classList.toggle('hidden', !me.team);
+  if (!me.team) { seenPosts = null; return; }
+  teamBoard.render(me.team);
+}
+let teamSeq = 0;
+async function refreshTeam() {
+  const seq = ++teamSeq;
+  try {
+    const b = await api('/api/student/team', { headers: authHeaders() });
+    if (seq !== teamSeq) return;
+    if (!me.team) toast(`👥 '${b.team.name}' 팀에 배정되었습니다.`, 'ok', 4000);
+    me.team = b;
+  } catch (e) {
+    if (e.status !== 404 || seq !== teamSeq) return;
+    me.team = null;
+  }
+  renderTeam();
+  renderAssignments();
+}
+$('#teamToggle').addEventListener('click', () => {
+  teamOpen = !teamOpen;
+  $('#teamBoard').classList.toggle('hidden', !teamOpen);
+  $('#teamToggle').textContent = teamOpen ? '접기' : '펼치기';
+  if (teamOpen) $('#teamNew').classList.add('hidden');
+});
 
 // ------------------------------------------------------------ 선생님 자료
 const CONVERTIBLE = new Set(['doc', 'docx', 'ppt', 'pptx', 'pps', 'ppsx', 'xls', 'xlsx', 'hwp']);

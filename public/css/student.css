@@ -110,6 +110,7 @@
 .assign-card .ac-title b { font-size: 15px; overflow-wrap: anywhere; }
 .ac-my { font-size: 12px; font-weight: 700; padding: 1px 8px; border-radius: 99px; background: var(--panel-2); color: var(--muted); }
 .ac-my.my-제출 { background: var(--ok-weak); color: var(--ok); }
+.ac-team { font-size: 12px; font-weight: 700; padding: 1px 8px; border-radius: 99px; background: var(--primary-weak); color: var(--primary); }
 .ac-my.my-지각 { background: var(--warn-weak); color: var(--warn); }
 .ac-desc { font-size: 13px; margin-top: 3px; white-space: pre-line; overflow-wrap: anywhere; }
 .ac-due { font-size: 12px; color: var(--muted); margin-top: 3px; }
