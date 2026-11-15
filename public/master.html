@@ -178,8 +178,10 @@
           <div class="mg-thread" id="mgThread"></div>
           <form class="mg-compose" id="mgForm" autocomplete="off">
             <textarea class="input" id="mgInput" rows="3" maxlength="2000"></textarea>
+            <div class="mg-files hidden" id="mgFiles"></div>
             <div class="mg-send">
-              <span class="muted small" id="mgHint"></span>
+              <label class="btn sm" title="파일 첨부 (최대 10개)">📎 파일<input type="file" id="mgFileInput" multiple hidden></label>
+              <span class="muted small mg-hint" id="mgHint"></span>
               <button class="btn primary" id="mgSend" type="submit">보내기</button>
             </div>
           </form>

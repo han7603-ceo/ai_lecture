@@ -849,6 +849,18 @@ $('#myLinkQr').addEventListener('click', () => {
 const KIND_TAG = { notice: '📢 공지', feedback: '📝 과제 피드백', dm: '💬 선생님' };
 const unreadTeacher = () => (me.messages || []).filter((m) => m.from === 'teacher' && !m.read);
 const msgTime = (t) => new Date(t).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+// 선생님이 메시지에 붙인 파일: 누르면 미리보기(다운로드 가능)
+const attUrl = (m, a, opt = '') => `/msgfiles/${m.id}/${a.id}?t=${encodeURIComponent(token)}${opt}`;
+function msgAtts(m) {
+  if (!m.attachments?.length) return null;
+  return h('div', { class: 'msg-atts' }, ...m.attachments.map((a) => h('button', {
+    type: 'button', class: 'msg-att', title: `${a.name} 미리보기`,
+    onclick: () => openPreview({
+      name: a.name, ext: a.ext, size: a.size, url: attUrl(m, a), download: attUrl(m, a, '&download=1'),
+      pdfUrl: me.canConvert && CONVERTIBLE.has(a.ext) ? `/msgfiles/${m.id}/${a.id}/pdf?t=${encodeURIComponent(token)}` : null,
+    }),
+  }, h('span', { class: 'msg-att-ico' }, iconOf(a.ext)), h('span', { class: 'msg-att-name' }, a.name), h('span', { class: 'msg-att-size' }, formatBytes(a.size)))));
+}
 function renderMessages() {
   const list = me.messages || [];
   const unread = unreadTeacher().length;
@@ -863,6 +875,7 @@ function renderMessages() {
     return h('div', { class: `msg ${mine ? 'mine' : `teacher ${m.kind}`} ${!mine && !m.read ? 'unread' : ''}` },
       !mine ? h('div', { class: 'msg-tag' }, KIND_TAG[m.kind] || '💬 선생님') : null,
       m.text,
+      msgAtts(m),
       h('div', { class: 'msg-meta' }, msgTime(m.at), mine ? (m.read ? ' · 선생님이 읽음' : ' · 안 읽음') : ''));
   }) : [h('p', { class: 'muted small msg-empty' }, '아직 메시지가 없습니다. 궁금한 점은 아래에 남겨 주세요.')]));
   if (atBottom || !box.dataset.ready) box.scrollTop = box.scrollHeight;
@@ -919,7 +932,7 @@ function popMessages(items) {
   };
   popEl.firstChild.replaceChildren(
     h('h3', { style: 'margin:0' }, popItems.length > 1 ? `선생님 메시지 ${popItems.length}개` : (KIND_TAG[popItems[0].kind] || '💬 선생님 메시지')),
-    ...popItems.map((m) => h('div', { class: `msg-pop-item ${m.kind}` }, popItems.length > 1 ? h('div', { class: 'msg-tag' }, KIND_TAG[m.kind] || '💬') : null, m.text,
+    ...popItems.map((m) => h('div', { class: `msg-pop-item ${m.kind}` }, popItems.length > 1 ? h('div', { class: 'msg-tag' }, KIND_TAG[m.kind] || '💬') : null, m.text, msgAtts(m),
       h('div', { class: 'msg-meta muted small' }, msgTime(m.at)))),
     h('div', { class: 'row-actions', style: 'display:flex;gap:8px;justify-content:flex-end' },
       h('button', { class: 'btn', onclick: () => { close(); $('#msgBtn').click(); } }, '답장하기'),
